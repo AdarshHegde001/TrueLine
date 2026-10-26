@@ -1,0 +1,4 @@
+psycopg[binary]>=3.2
+pydantic>=2.6
+sentence-transformers>=3.0   # loads BAAI/bge-m3 (dense, 1024-d); first run downloads ~2.3 GB
+pytest>=8.0
