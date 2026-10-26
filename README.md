@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/truline_logo.png" alt="TrueLine logo" width="112" />
+  <img src="assets/truline_logo.png" alt="TrueLine logo" width="170" />
   <h1>TrueLine</h1>
   <p><strong>Evidence-grounded brand governance for content review.</strong></p>
   <p>Ingest an organization's approved guidance, review draft content against it, and return cited findings for a human to assess.</p>
