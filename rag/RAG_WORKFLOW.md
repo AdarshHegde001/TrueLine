@@ -1,6 +1,6 @@
 # Trueline RAG Review Workflow
 
-**Status: proposed implementation workflow, aligned with the ingestion contract and Round 1 plan.**
+**Status: first agentic workflow implemented; critique, suggestions, and human decision tools remain future work.**
 
 This document describes what happens when a creator submits content for review. The ingestion workstream separately prepares approved, versioned brand knowledge and indexes it in PostgreSQL + pgvector using BGE-M3. The RAG/review pipeline consumes that knowledge; it does not ingest or rewrite the brand source of truth.
 
@@ -15,8 +15,9 @@ Review request
   → validate request and brand context
   → parse submitted content and preserve locations
   → run deterministic checks ─────────────────────────┐
-  → identify claim/tone passages and retrieve evidence ├→ evaluate with bounded AI steps
-  → validate quotes, sources, versions, and findings ──┘
+  → retrieve focused evidence for tone and claims
+  → tone agent → claims agent → final summarizer
+  → validate returned citations and preserve uncertainty
   → return review result to backend/frontend
   → creator/reviewer makes the decision
 ```
@@ -93,11 +94,11 @@ Only approved, active knowledge for the requested brand may be used. A retrieval
 
 ### 7. Evaluate with bounded AI components
 
-For the Round 2 MVP, use the plan’s first three AI responsibilities as separate constrained calls or clearly separated steps in the fixed orchestrator:
+The current graph runs two specialist responsibilities as separate constrained calls followed by a final summarizer:
 
 - **A1 Tone Judge:** Compare the submission passage only with retrieved tone/voice guidelines. Do not invent tone standards.
 - **A2 Claim Agent:** Extract a potentially verifiable claim and compare it with retrieved approved facts and applicable claim rules. Return `supported`, `contradicted`, or `unverified` for claim assessment. Lack of a matching fact is not evidence that the claim is false.
-- **A3 Suggestion Agent:** Given a validated finding and relevant source context, propose a minimal change and optionally a rewrite. Suggestions must not introduce unsupported factual claims; they are proposals, not approved facts.
+- **Final summarizer:** Receives the full prepared context, both focused evidence sets, and both specialist results. It summarizes the outcome while preserving uncertainty; it does not approve or rewrite the draft.
 
 Each call receives only the relevant submission passage and small retrieved context, plus a strict structured-output schema. Use the selected local model/runtime after it is verified. If the model is unavailable or returns malformed output, preserve deterministic results and mark AI checks as failed/pending; do not fabricate successful findings.
 
@@ -181,8 +182,8 @@ The reusable non-AI review preparation path is now implemented under `rag/`:
 - `retrieval/` defines shared search request/response models, a contract adapter for ingestion callables, and focused passage queries with offsets. It does not implement SQL or BGE-M3; the ingestion teammate owns that search function.
 - `context.py` assembles parsed text, locations, deterministic outcomes, retrieval evidence, and retrieval status into a bounded JSON payload with a separate fixed system instruction.
 - `review.py` wires rule loading, deterministic checks, retrieval, and context assembly into `prepare_review(...)`; it does not call any model.
-- `test.py` is a manual Gemini API smoke script. It sends a fixed synthetic prompt only; it does not send a submitted document or review context.
+- `agentic/workflow.py` implements a fixed LangGraph with a tone judge, claim verifier, and final summarizer. Each specialist retrieves using its document-type filter through the ingestion adapter. The claims node receives the tone result, and the summarizer receives the prepared context, evidence returned to both specialists, and both agent outputs. Outputs are validated against Pydantic schemas; returned citations must resolve to retrieved chunks and exact chunk quotes. A supported/contradicted claim without an approved-fact citation is downgraded to unverified. Configure shared or per-agent OpenAI-compatible endpoints in `backend/.env`; Ollama uses `http://localhost:11434/v1` by default. The API key is passed only to the model client and is never returned by health or review responses.
 
-These modules do not call an LLM and can be developed before the teammate’s ingestion implementation is complete. Deterministic checks accept typed rules mapped from approved `rule_data` in `data_ingestion/RAG_INGESTION_CONTRACT.md`; they do not infer executable rules from free-form prose. RAG-side retrieval orchestration and context assembly are implemented against the shared contract, but end-to-end retrieval is not live until ingestion supplies `search_knowledge` and `get_deterministic_rules`. AI/LangGraph orchestration remains later work.
+Deterministic checks accept typed rules mapped from approved `rule_data` in `data_ingestion/RAG_INGESTION_CONTRACT.md`; they do not infer executable rules from free-form prose. RAG-side retrieval orchestration and context assembly use the ingestion contract, and the agent graph now invokes its search adapter for specialist retrieval. The old standalone Gemini smoke script has been removed. The frontend still reflects its earlier smoke-test presentation and will need a follow-up UI update to display `agentResults`.
 
 Parser limitations at this stage: PDF OCR is not implemented; the parser returns a warning for pages with no extractable text. File-size limits, upload authorization, privacy masking, persistence, and backend API integration belong to their agreed platform boundaries and are not implemented in these RAG modules.

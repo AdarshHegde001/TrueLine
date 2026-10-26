@@ -11,7 +11,7 @@ docker compose up -d db                                   # Postgres 16 + pgvect
 pip install -r requirements.txt
 export DATABASE_URL=postgresql://trueline:trueline@localhost:5433/trueline
 python -m trueline_ingestion migrate
-python -m trueline_ingestion seed                         # downloads BGE-M3 (~2.3 GB) first time
+python -m trueline_ingestion seed                         # downloads BGE-M3 dense checkpoint (~2.27 GB) first time
 python -m trueline_ingestion search --brand brand_lumina --query "clinically proven to remove all wrinkles"
 ```
 Add `--fake` to any command to skip the model download (test-only hash embedder; its tag says FAKE).
