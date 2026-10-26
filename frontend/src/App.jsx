@@ -1,9 +1,17 @@
 import { useEffect, useMemo, useState } from 'react';
 
 const API = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
-const emptyKnowledge = { file: null, category: 'rulebook', brandId: 'brand_lumina', title: '', ruleData: '' };
-
-function Icon({ children }) { return <span className="icon" aria-hidden="true">{children}</span>; }
+const emptyKnowledge = { file: null, documentType: 'brand_guidelines', title: '', ruleData: '' };
+const documentTypeLabels = {
+  brand_guidelines: 'Brand guidelines',
+  tone_of_voice: 'Tone of voice',
+  approved_claims: 'Approved claims',
+  product_facts: 'Product facts',
+  glossary: 'Glossary',
+  asset_rules: 'Asset rules',
+  legal_compliance: 'Legal & compliance',
+  other_reference: 'Other reference',
+};
 
 function StatusPill({ status }) {
   const kind = status === 'ready' || status === 'complete' ? 'good'
@@ -12,11 +20,10 @@ function StatusPill({ status }) {
 }
 
 function App() {
-  const [activeTab, setActiveTab] = useState('knowledge');
+  const [activeTab, setActiveTab] = useState('home');
   const [health, setHealth] = useState(null);
   const [knowledge, setKnowledge] = useState(emptyKnowledge);
   const [reviewFile, setReviewFile] = useState(null);
-  const [reviewBrand, setReviewBrand] = useState('brand_lumina');
   const [channel, setChannel] = useState('advertisement');
   const [uploads, setUploads] = useState([]);
   const [reviewResult, setReviewResult] = useState(null);
@@ -41,8 +48,8 @@ function App() {
   }, []);
 
   const counts = useMemo(() => ({
-    rulebooks: uploads.filter((item) => item.category === 'rulebook').length,
-    resources: uploads.filter((item) => item.category === 'resource').length,
+    guidance: uploads.filter((item) => ['brand_guidelines', 'tone_of_voice', 'legal_compliance', 'glossary', 'asset_rules'].includes(item.document_type)).length,
+    approved: uploads.filter((item) => ['approved_claims', 'product_facts'].includes(item.document_type)).length,
   }), [uploads]);
 
   function notify(message) {
@@ -52,22 +59,21 @@ function App() {
 
   async function submitKnowledge(event) {
     event.preventDefault();
-    if (!knowledge.file) return notify('Choose a rulebook or resource file first.');
+    if (!knowledge.file) return notify('Choose a source document first.');
     setKnowledgeBusy(true);
     setToast('');
     try {
       const body = new FormData();
       body.append('file', knowledge.file);
-      body.append('brandId', knowledge.brandId);
       body.append('title', knowledge.title || knowledge.file.name.replace(/\.[^.]+$/, ''));
-      body.append('category', knowledge.category);
+      body.append('documentType', knowledge.documentType);
       body.append('ruleData', knowledge.ruleData);
       body.append('approved', 'true');
       const response = await fetch(`${API}/api/knowledge`, { method: 'POST', body });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Could not ingest this source.');
-      setUploads((items) => [{ ...data.source, category: knowledge.category, addedAt: new Date() }, ...items]);
-      setKnowledge({ ...emptyKnowledge, brandId: knowledge.brandId });
+      setUploads((items) => [{ ...data.source, addedAt: new Date() }, ...items]);
+      setKnowledge(emptyKnowledge);
       notify('Source parsed, stored, chunked, and indexed.');
     } catch (error) {
       notify(error.message);
@@ -85,7 +91,6 @@ function App() {
     try {
       const body = new FormData();
       body.append('file', reviewFile);
-      body.append('brandId', reviewBrand);
       body.append('channel', channel);
       const response = await fetch(`${API}/api/review`, { method: 'POST', body });
       const data = await response.json();
@@ -103,47 +108,90 @@ function App() {
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand-lockup"><div className="brand-mark">T<span>.</span></div><span>trueline</span></div>
-        <div className="workspace-label">WORKSPACE</div>
-        <div className="workspace-card"><div className="workspace-avatar">L</div><div><b>Lumina Studio</b><small>Brand governance</small></div><span className="chevron">⌄</span></div>
-        <div className="nav-label">REVIEW WORKSPACE</div>
-        <button className={`nav-item ${activeTab === 'knowledge' ? 'selected' : ''}`} onClick={() => setActiveTab('knowledge')}>
-          <Icon>▤</Icon> Knowledge library <span className="nav-count">{uploads.length}</span>
+      <header className="site-header">
+        <button className="logo-button" onClick={() => setActiveTab('home')} aria-label="TrueLine home">
+          <img src="/TrueLine_logo.jpg" alt="TrueLine" />
         </button>
-        <button className={`nav-item ${activeTab === 'review' ? 'selected' : ''}`} onClick={() => setActiveTab('review')}>
-          <Icon>◉</Icon> Document review
-        </button>
-        <div className="sidebar-bottom">
-          <div className="system-card"><div className="system-head"><span className="pulse-dot" /> SYSTEM STATUS</div>
-            <div className="system-row"><span>API + RAG worker</span><StatusPill status={health?.status || 'connecting'} /></div>
-            <div className="system-row"><span>Gemini</span><StatusPill status={health?.geminiConfigured ? 'ready' : 'not configured'} /></div>
-            {health?.embedder && <small className="embedder-note">Embedder · {health.embedder}</small>}
-          </div>
-          <div className="profile"><div className="profile-avatar">AH</div><div><b>Workspace admin</b><small>Local prototype</small></div><span className="more">···</span></div>
-        </div>
-      </aside>
+        <nav className="main-nav" aria-label="Main navigation">
+          <button className={`nav-link ${activeTab === 'home' ? 'active' : ''}`} onClick={() => setActiveTab('home')}>Home</button>
+          <button className={`nav-link ${activeTab === 'knowledge' ? 'active' : ''}`} onClick={() => setActiveTab('knowledge')}>Knowledge base</button>
+          <button className={`nav-link ${activeTab === 'review' ? 'active' : ''}`} onClick={() => setActiveTab('review')}>Verify a document</button>
+        </nav>
+      </header>
 
       <main className="main-content">
-        <header className="topbar"><div className="breadcrumb">Workspace <span>/</span> {activeTab === 'knowledge' ? 'Knowledge library' : 'Document review'}</div><div className="top-actions"><span className="environment-label"><i /> LOCAL ENVIRONMENT</span><button className="help-button" title="Help">?</button></div></header>
+        {activeTab === 'home' && (
+          <>
+            <section className="hero-section">
+              <div className="hero-copy">
+                <div className="eyebrow"><span className="eyebrow-line" /> PRE-PUBLICATION BRAND GOVERNANCE</div>
+                <h1>Make every draft<br />feel <em>like your brand.</em></h1>
+                <p className="hero-description">TrueLine checks content against approved guidelines, facts, and brand resources. Every finding is grounded in evidence, so your team can review with clarity and keep people in control.</p>
+                <div className="hero-actions">
+                  <button className="primary-button" onClick={() => setActiveTab('knowledge')}>Add brand sources <b>→</b></button>
+                  <button className="text-button" onClick={() => setActiveTab('review')}><span>Verify content</span><b>↗</b></button>
+                </div>
+                <div className="hero-principle"><span>✓</span><p><b>Cite or stay silent.</b> Unsupported claims are marked unverified, never assumed false.</p></div>
+              </div>
+              <div className="hero-visual">
+                <div className="visual-orbit orbit-one" /><div className="visual-orbit orbit-two" />
+                <div className="review-preview">
+                  <div className="preview-top"><span className="preview-file-icon">▤</span><span><b>Campaign draft</b><small>Evidence-led review</small></span><span className="preview-menu">•••</span></div>
+                  <div className="preview-content"><span className="preview-kicker">REVIEWING A CLAIM</span><p>“Our new formula is <mark>clinically proven</mark> to work.”</p>
+                    <div className="preview-finding"><span className="finding-icon">!</span><span><b>Needs supporting evidence</b><small>Check against approved claims.</small></span><span className="finding-arrow">↗</span></div>
+                    <div className="preview-source"><span className="source-check">✓</span><span><small>RETRIEVED SOURCE</small><b>Claims policy · Section 3.2</b></span><span className="source-link">↗</span></div>
+                  </div>
+                  <div className="preview-footer"><span><i /> Source linked</span><small>Human review stays in control</small></div>
+                </div>
+                <div className="floating-note"><span>↗</span><span><b>Evidence first</b><small>at every step</small></span></div>
+              </div>
+            </section>
+
+            <section className="principles-section page-content">
+              <div className="section-intro"><div className="eyebrow"><span className="eyebrow-line" /> THE TRUE LINE APPROACH</div><h2>Review content with confidence.</h2><p>Catch inconsistencies early, see why something was flagged, and make the final decision as a person.</p></div>
+              <div className="principle-grid">
+                <article className="principle-card"><span className="principle-number">01</span><div className="principle-icon">⌕</div><h3>Rules before guesswork</h3><p>Deterministic checks handle approved terminology and required wording consistently.</p></article>
+                <article className="principle-card"><span className="principle-number">02</span><div className="principle-icon">◈</div><h3>Evidence with each finding</h3><p>Retrieved passages link back to approved source documents and their versions.</p></article>
+                <article className="principle-card"><span className="principle-number">03</span><div className="principle-icon">◎</div><h3>People stay in control</h3><p>AI can support a review, but people remain responsible for the outcome.</p></article>
+              </div>
+            </section>
+
+            <section className="workflow-section">
+              <div className="page-content">
+                <div className="section-intro workflow-intro"><div className="eyebrow"><span className="eyebrow-line" /> HOW IT WORKS</div><h2>From approved sources to a reviewed draft.</h2><p>The platform is being built in stages. The core source and retrieval path works today; the specialist agent workflow is planned next.</p></div>
+                <div className="workflow-steps">
+                  <article><span className="workflow-index">01</span><span className="workflow-icon">↥</span><h3>Add knowledge</h3><p>Upload guidelines, tone rules, claims, facts, glossaries, and asset rules with a document type.</p><span className="stage-tag available">Available now</span></article>
+                  <article><span className="workflow-index">02</span><span className="workflow-icon">▤</span><h3>Prepare the index</h3><p>Text is parsed, chunked, tagged, and embedded for hybrid search with PostgreSQL and pgvector.</p><span className="stage-tag available">Available now</span></article>
+                  <article><span className="workflow-index">03</span><span className="workflow-icon">⌕</span><h3>Check a draft</h3><p>Deterministic rules run and relevant approved evidence is retrieved for the submitted document.</p><span className="stage-tag available">Available now</span></article>
+                  <article><span className="workflow-index">04</span><span className="workflow-icon">✧</span><h3>Ask specialist agents</h3><p>Planned tone and claim agents will assess focused evidence and return source-linked findings.</p><span className="stage-tag planned">Planned</span></article>
+                </div>
+              </div>
+            </section>
+
+            <section className="prototype-section page-content">
+              <div className="prototype-card"><div className="prototype-copy"><div className="eyebrow"><span className="eyebrow-line" /> CURRENT PROTOTYPE</div><h2>A clear picture of what works today.</h2><p>Document parsing, deterministic checks, hybrid retrieval, and context assembly are in place. For now, the review page makes one Gemini smoke-test call with that prepared context. Multi-agent LangGraph orchestration, critique, suggestions, and human approval tools are future work.</p><button className="text-button" onClick={() => setActiveTab('review')}><span>See the current review flow</span><b>→</b></button></div><div className="prototype-checklist"><div><span className="check-state done">✓</span><span><b>Core review preparation</b><small>Parsing · rules · retrieval · context</small></span></div><div><span className="check-state demo">✦</span><span><b>Gemini smoke test</b><small>Single request with prepared context</small></span></div><div><span className="check-state next">→</span><span><b>Planned next</b><small>Specialists · critique · human decisions</small></span></div></div></div>
+            </section>
+
+            <section className="closing-cta page-content"><div><div className="eyebrow"><span className="eyebrow-line" /> START WITH YOUR SOURCES</div><h2>Give every review a trusted reference.</h2></div><button className="primary-button" onClick={() => setActiveTab('knowledge')}>Open knowledge base <b>→</b></button></section>
+          </>
+        )}
 
         {activeTab === 'knowledge' ? (
           <section className="page-content">
-            <div className="eyebrow"><span className="eyebrow-line" /> BRAND KNOWLEDGE</div>
-            <div className="page-heading-row"><div><h1>Knowledge library</h1><p className="subtitle">Give Trueline the rules and references it needs to review your content.</p></div><button className="text-button" onClick={() => setActiveTab('review')}><span>Open document review</span><b>↗</b></button></div>
+            <div className="eyebrow"><span className="eyebrow-line" /> KNOWLEDGE BASE</div>
+            <div className="page-heading-row"><div><h1>Bring your brand rules together.</h1><p className="subtitle">Upload approved sources and label what each document contains so the right evidence can be found later.</p></div><button className="text-button" onClick={() => setActiveTab('review')}><span>Verify a document</span><b>↗</b></button></div>
 
             <div className="stat-grid">
-              <div className="stat-card"><div className="stat-icon violet">▤</div><div><span>RULEBOOKS</span><b>{counts.rulebooks}</b></div><small>approved sources</small></div>
-              <div className="stat-card"><div className="stat-icon blue">◈</div><div><span>RESOURCES</span><b>{counts.resources}</b></div><small>approved sources</small></div>
+              <div className="stat-card"><div className="stat-icon violet">▤</div><div><span>GUIDANCE</span><b>{counts.guidance}</b></div><small>tone, brand, compliance</small></div>
+              <div className="stat-card"><div className="stat-icon blue">◈</div><div><span>CLAIMS & FACTS</span><b>{counts.approved}</b></div><small>approved sources</small></div>
               <div className="stat-card"><div className="stat-icon green">⌕</div><div><span>RETRIEVAL INDEX</span><b>{uploads.length ? 'Ready' : 'Waiting'}</b></div><small>Postgres + pgvector</small></div>
             </div>
 
-            <div className="section-title-row"><div><h2>Add a knowledge source</h2><p>Upload a rulebook or a supporting resource for this brand.</p></div><span className="step-label"><b>01</b> INGEST</span></div>
+            <div className="section-title-row"><div><h2>Add a source</h2><p>Text is extracted, versioned, chunked, and indexed for retrieval.</p></div><span className="step-label"><b>01</b> INGEST</span></div>
             <div className="content-grid">
               <form className="panel upload-panel" onSubmit={submitKnowledge}>
                 <div className="form-grid">
-                  <label className="field"><span>Source type</span><select value={knowledge.category} onChange={(e) => setKnowledge({ ...knowledge, category: e.target.value, ruleData: e.target.value === 'resource' ? '' : knowledge.ruleData })}><option value="rulebook">Rulebook</option><option value="resource">Resource / approved facts</option></select></label>
-                  <label className="field"><span>Brand ID</span><input required value={knowledge.brandId} onChange={(e) => setKnowledge({ ...knowledge, brandId: e.target.value })} placeholder="brand_lumina" /></label>
+                  <label className="field"><span>Document type</span><select value={knowledge.documentType} onChange={(e) => setKnowledge({ ...knowledge, documentType: e.target.value })}>{Object.entries(documentTypeLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
                 </div>
                 <label className="field"><span>Source title <em>Optional</em></span><input value={knowledge.title} onChange={(e) => setKnowledge({ ...knowledge, title: e.target.value })} placeholder="e.g. Visual identity guidelines" /></label>
                 <label className="dropzone" onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); const file = e.dataTransfer.files?.[0]; if (file) setKnowledge({ ...knowledge, file }); }}>
@@ -151,29 +199,29 @@ function App() {
                   <span className="drop-icon">↑</span><b>{knowledge.file ? knowledge.file.name : 'Choose a file or drag it here'}</b><small>PDF, DOCX, TXT or Markdown · up to 15 MB</small>
                 </label>
 
-                {knowledge.category === 'rulebook' && <label className="field rule-data-field"><span>Structured deterministic rules <em>Optional</em></span><textarea rows="5" value={knowledge.ruleData} onChange={(e) => setKnowledge({ ...knowledge, ruleData: e.target.value })} placeholder={'Paste confirmed rules as a JSON array. These are applied by deterministic checks.\n\n[{"rule_id":"rule_1","kind":"terminology","mode":"replace_with_preferred","term":"Tru Line","replacement":"Trueline"}]'} /></label>}
-                <div className="form-foot"><div className="approval-note"><span className="checkmark">✓</span><span><b>Approved source</b><small>This upload will be indexed for the selected brand.</small></span></div><button className="primary-button" type="submit" disabled={knowledgeBusy || !health || health.status !== 'ready'}>{knowledgeBusy ? <><span className="spinner" /> Indexing…</> : <>Add to knowledge base <b>→</b></>}</button></div>
-                <p className="fine-print">Rulebook prose is searchable, but deterministic checks only run on rules supplied in the structured field above.</p>
+                <label className="field rule-data-field"><span>Reviewed deterministic rules <em>Optional</em></span><textarea rows="5" value={knowledge.ruleData} onChange={(e) => setKnowledge({ ...knowledge, ruleData: e.target.value })} placeholder={'Add only rules that have been reviewed and confirmed. They will run as exact deterministic checks.\n\n[{"rule_id":"rule_1","kind":"terminology","mode":"replace_with_preferred","term":"Tru Line","replacement":"Trueline"}]'} /></label>
+                <div className="form-foot"><div className="approval-note"><span className="checkmark">✓</span><span><b>Approved source</b><small>This document will be indexed for review.</small></span></div><button className="primary-button" type="submit" disabled={knowledgeBusy || !health || health.status !== 'ready'}>{knowledgeBusy ? <><span className="spinner" /> Indexing…</> : <>Add to knowledge base <b>→</b></>}</button></div>
+                <p className="fine-print">The selected document type is included in the embedding input and stored as a retrieval filter. Prose is not converted into deterministic rules automatically.</p>
               </form>
-              <aside className="info-panel"><div className="info-icon">✳</div><h3>What happens after upload?</h3><ol><li><b>Text is extracted</b><span>PDF, DOCX and text files are parsed with source metadata.</span></li><li><b>Source is versioned</b><span>The original text and approved rule data are saved in PostgreSQL.</span></li><li><b>Search index is prepared</b><span>Text is chunked, embedded and made available to hybrid retrieval.</span></li></ol><div className="info-note"><b>Rulebook tip</b><p>For exact word and required-phrase checks, include reviewed rules in the structured rules field. Natural-language rules remain available as retrieval evidence.</p></div></aside>
+              <aside className="info-panel"><div className="info-icon">✳</div><h3>What happens after upload?</h3><ol><li><b>Text is extracted</b><span>PDF, DOCX and text files are parsed with source metadata.</span></li><li><b>Source is versioned</b><span>The original text, document type, and approved rule data are saved in PostgreSQL.</span></li><li><b>Search index is prepared</b><span>Typed chunks are embedded and made available to hybrid retrieval.</span></li></ol><div className="info-note"><b>Document type tip</b><p>Choose the closest purpose. Future tone, claims, and fact agents can filter retrieval to that type.</p></div></aside>
             </div>
 
-            <div className="section-title-row library-title"><div><h2>Recently added</h2><p>Your sources for this session.</p></div><span className="muted-label">{uploads.length} SOURCE{uploads.length === 1 ? '' : 'S'}</span></div>
-            <div className="panel table-panel">{uploads.length ? <div className="source-list">{uploads.map((item) => <div className="source-row" key={item.version_id}><div className={`source-file-icon ${item.category}`}>{item.category === 'rulebook' ? '§' : '◈'}</div><div className="source-name"><b>{item.title}</b><small>{item.category === 'rulebook' ? 'Rulebook' : 'Resource'} · v{item.version} · {item.chunk_count} chunks</small></div><span className="rule-count">{item.rule_count ? `${item.rule_count} rules` : 'No structured rules'}</span><StatusPill status={item.status} /></div>)}</div> : <div className="empty-state"><div className="empty-icon">▤</div><b>No sources added yet</b><p>Upload a rulebook or supporting resource to prepare this brand’s search index.</p></div>}</div>
+            <div className="section-title-row library-title"><div><h2>Recently added</h2><p>Uploads made during this session.</p></div><span className="muted-label">{uploads.length} SOURCE{uploads.length === 1 ? '' : 'S'}</span></div>
+            <div className="panel table-panel">{uploads.length ? <div className="source-list">{uploads.map((item) => <div className="source-row" key={item.version_id}><div className="source-file-icon knowledge">▤</div><div className="source-name"><b>{item.title}</b><small>{documentTypeLabels[item.document_type] || 'Other reference'} · v{item.version} · {item.chunk_count} chunks</small></div><span className="rule-count">{item.rule_count ? `${item.rule_count} rules` : 'No structured rules'}</span><StatusPill status={item.status} /></div>)}</div> : <div className="empty-state"><div className="empty-icon">▤</div><b>No sources added yet</b><p>Upload approved organization guidance, facts, or claims to prepare retrieval.</p></div>}</div>
           </section>
-        ) : (
+        ) : activeTab === 'review' ? (
           <section className="page-content review-page">
-            <div className="eyebrow"><span className="eyebrow-line" /> CONTENT ASSURANCE</div>
-            <div className="page-heading-row"><div><h1>Review a document</h1><p className="subtitle">Run deterministic checks, retrieve relevant evidence, then send the assembled context to Gemini.</p></div><span className="step-label"><b>02</b> REVIEW</span></div>
+            <div className="eyebrow"><span className="eyebrow-line" /> DOCUMENT REVIEW</div>
+            <div className="page-heading-row"><div><h1>Check a draft before it goes out.</h1><p className="subtitle">Run the current deterministic checks and retrieval flow. Gemini is a smoke test for now, not the future agentic reviewer.</p></div><span className="step-label"><b>01</b> GEMINI SMOKE TEST</span></div>
             <div className="review-layout">
               <form className="panel review-form" onSubmit={submitReview}>
                 <div className="panel-heading"><div className="panel-step">1</div><div><h3>Choose the document</h3><p>We’ll parse it and locate relevant approved sources.</p></div></div>
                 <label className="dropzone review-drop" onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); setReviewFile(e.dataTransfer.files?.[0] || null); }}><input type="file" accept=".txt,.md,.pdf,.docx" onChange={(e) => setReviewFile(e.target.files?.[0] || null)} /><span className="drop-icon">↑</span><b>{reviewFile ? reviewFile.name : 'Choose a document to verify'}</b><small>PDF, DOCX, TXT or Markdown · up to 15 MB</small></label>
-                <div className="form-grid review-fields"><label className="field"><span>Brand ID</span><input required value={reviewBrand} onChange={(e) => setReviewBrand(e.target.value)} /></label><label className="field"><span>Channel <em>Optional</em></span><select value={channel} onChange={(e) => setChannel(e.target.value)}><option value="advertisement">Advertisement</option><option value="social">Social media</option><option value="website">Website</option><option value="email">Email</option><option value="">No channel</option></select></label></div>
-                <div className="review-pipeline"><div className="pipeline-title">REVIEW PIPELINE</div><div className="pipeline-step"><span>✓</span><div><b>Parse document</b><small>Extract text and passage locations</small></div></div><div className="pipeline-step"><span>2</span><div><b>Deterministic checks + retrieval</b><small>Apply structured rules and search approved sources</small></div></div><div className="pipeline-step"><span>3</span><div><b>Gemini context review</b><small>Review the assembled evidence-backed context</small></div></div></div>
+                <div className="form-grid review-fields single-field"><label className="field"><span>Channel <em>Optional</em></span><select value={channel} onChange={(e) => setChannel(e.target.value)}><option value="advertisement">Advertisement</option><option value="social">Social media</option><option value="website">Website</option><option value="email">Email</option><option value="">No channel</option></select></label></div>
+                <div className="review-pipeline"><div className="pipeline-title">CURRENT REVIEW PATH</div><div className="pipeline-step"><span>1</span><div><b>Parse the document</b><small>Extract text and passage locations</small></div></div><div className="pipeline-step"><span>2</span><div><b>Run rules + retrieve evidence</b><small>Apply structured rules and search approved sources</small></div></div><div className="pipeline-step"><span>3</span><div><b>Send context to Gemini</b><small>One basic smoke-test request</small></div></div></div>
                 <button className="primary-button review-submit" disabled={reviewBusy || !health || health.status !== 'ready'} type="submit">{reviewBusy ? <><span className="spinner" /> Preparing review…</> : <>Run review <b>→</b></>}</button>
               </form>
-              <aside className="review-side"><div className="review-side-card"><div className="side-card-icon">✧</div><div><b>Evidence-led review</b><p>Retrieved content is treated as evidence, not instructions. Findings keep links to the exact source version used.</p></div></div><div className="review-side-card quiet"><div className="side-card-icon">⚡</div><div><b>Prototype mode</b><p>AI output is a smoke test. It is not a final compliance decision or a substitute for human approval.</p></div></div></aside>
+              <aside className="review-side"><div className="review-side-card"><div className="side-card-icon">✧</div><div><b>Evidence-led review</b><p>Retrieved passages are treated as evidence, not instructions, and stay linked to their source version.</p></div></div><div className="review-side-card quiet"><div className="side-card-icon">⚡</div><div><b>Prototype mode</b><p>This single Gemini call is a smoke test, not a final compliance decision or the planned multi-agent workflow.</p></div></div></aside>
             </div>
 
             {reviewResult && <div className="results-section">
@@ -190,8 +238,9 @@ function App() {
               <details className="context-details"><summary>Inspect the context sent for AI review</summary><pre>{JSON.stringify(reviewResult.preparedReview.ai_context, null, 2)}</pre></details>
             </div>}
           </section>
-        )}
+        ) : null}
       </main>
+      <footer className="site-footer"><span>TrueLine</span><span>Evidence-led brand governance · Human decisions stay in control</span></footer>
       {toast && <div className="toast"><span>!</span>{toast}</div>}
     </div>
   );

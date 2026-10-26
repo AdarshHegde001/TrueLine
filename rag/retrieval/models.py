@@ -8,6 +8,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from rag.models import TextSpan
 
+DocumentType = Literal[
+    "brand_guidelines", "tone_of_voice", "approved_claims", "product_facts",
+    "glossary", "asset_rules", "legal_compliance", "other_reference",
+]
+
 
 class KnowledgeSearchRequest(BaseModel):
     model_config = ConfigDict(frozen=True)
@@ -15,6 +20,7 @@ class KnowledgeSearchRequest(BaseModel):
     brand_id: str = Field(min_length=1)
     query: str = Field(min_length=1)
     source_types: tuple[str, ...] = ("guideline", "approved_fact")
+    document_types: tuple[DocumentType, ...] = ()
     top_k: int = Field(default=8, ge=1, le=20)
 
     @model_validator(mode="after")
@@ -31,6 +37,7 @@ class RetrievedChunk(BaseModel):
     source_id: str = Field(min_length=1)
     version_id: str = Field(min_length=1)
     source_type: str = Field(min_length=1)
+    document_type: DocumentType = "other_reference"
     title: str
     version_number: int = Field(ge=1)
     chunk_id: str = Field(min_length=1)

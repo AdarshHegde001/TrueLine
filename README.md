@@ -1,6 +1,6 @@
 # TrueLine local prototype
 
-This prototype connects the existing Python ingestion/RAG code to an Express API and a React/Vite UI. The UI has two flows: add organization knowledge (a rulebook or resource), then submit a document for deterministic checks, evidence retrieval, and a Gemini smoke-test review.
+This prototype connects the existing Python ingestion/RAG code to an Express API and a React/Vite UI for one configured organization. The UI has two flows: add typed organization knowledge, then submit a document for deterministic checks, evidence retrieval, and a Gemini smoke-test review.
 
 ## Layout
 
@@ -37,6 +37,8 @@ Use Python 3.11 or 3.12 for the current ML packages.
    (cd data_ingestion && docker compose up -d db)
    ```
 
+   After the document-type embedding format upgrade, existing approved sources need reindexing once with the same embedder configured in `backend/.env` (`python -m trueline_ingestion reindex` from `data_ingestion/`; for an existing fake-indexed demo, add `--fake`).
+
 2. Install the Python dependencies for the quick demo (the fake embedder avoids the large BGE model download):
 
    ```bash
@@ -69,8 +71,8 @@ Use Python 3.11 or 3.12 for the current ML packages.
 
 ## Demo workflow
 
-1. In **Knowledge library**, add an organization/brand ID, select **Rulebook** or **Resource**, and upload a `.txt`, `.md`, `.pdf`, or `.docx` file (15 MB maximum).
-2. For deterministic checks, paste explicitly reviewed structured rules into the optional JSON array. Rulebook prose is searchable, but the system deliberately does not infer executable rules from prose. Example:
+1. In **Knowledge library**, select the document type and upload a `.txt`, `.md`, `.pdf`, or `.docx` file (15 MB maximum). Supported types are brand guidelines, tone of voice, approved claims, product facts, glossary, asset rules, legal & compliance, and other reference.
+2. For deterministic checks, paste explicitly reviewed structured rules into the optional JSON array. The system does not infer executable rules from prose. Example:
 
    ```json
    [{
@@ -86,12 +88,12 @@ Use Python 3.11 or 3.12 for the current ML packages.
    }]
    ```
 
-3. In **Document review**, submit the verification document with the same brand ID and a channel. The backend parses it, runs deterministic rules, retrieves evidence, assembles RAG context, and sends that context to Gemini if `GEMINI_API_KEY` is set.
+3. In **Document review**, submit the verification document and select a channel. The backend uses the configured organization, parses the document, runs deterministic rules, retrieves evidence, assembles RAG context, and sends that context to Gemini if `GEMINI_API_KEY` is set.
 4. Inspect the deterministic findings, Gemini response, and expandable JSON context in the UI.
 
 ## Gemini settings
 
-`backend/.env` accepts `GEMINI_API_KEY`, `GEMINI_API_BASE_URL`, and `GEMINI_MODEL`. The default model is `gemini-3.1-flash-lite`; the configured base URL is `https://generativelanguage.googleapis.com/v1beta`. Google’s current pricing page lists free-tier input/output for this model, subject to quota and availability. The Gemini free tier may use submitted prompts to improve Google products, so use non-sensitive test documents unless your data policies allow otherwise. See the [Gemini model list](https://ai.google.dev/gemini-api/docs/models), [pricing](https://ai.google.dev/gemini-api/docs/pricing), and [Generate Content API](https://ai.google.dev/api/generate-content).
+`backend/.env` accepts `TRUELINE_BRAND_ID` and `TRUELINE_ORGANIZATION_NAME` for the single organization, plus `GEMINI_API_KEY`, `GEMINI_API_BASE_URL`, and `GEMINI_MODEL`. The browser no longer sends or edits a brand ID; both ingest and review use the backend-configured organization. The default Gemini model is `gemini-3.1-flash-lite`; the configured base URL is `https://generativelanguage.googleapis.com/v1beta`. Google’s current pricing page lists free-tier input/output for this model, subject to quota and availability. The Gemini free tier may use submitted prompts to improve Google products, so use non-sensitive test documents unless your data policies allow otherwise. See the [Gemini model list](https://ai.google.dev/gemini-api/docs/models), [pricing](https://ai.google.dev/gemini-api/docs/pricing), and [Generate Content API](https://ai.google.dev/api/generate-content).
 
 If the Gemini key is blank, RAG still runs and the UI shows the assembled context, while the AI section reports that Gemini is not configured. The key stays in the backend environment and is never sent to the browser.
 

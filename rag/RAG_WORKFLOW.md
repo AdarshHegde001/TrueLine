@@ -78,11 +78,13 @@ Do not submit the entire document as one undifferentiated query by default. Avoi
 
 ### 6. Retrieve approved evidence
 
-Call the ingestion/retrieval contract for each focused query with `brand_id`, query text, optional `source_types`, and bounded `top_k`. The agreed target is hybrid PostgreSQL full-text + pgvector search, with BGE-M3 dense vectors (1024 dimensions) for semantic retrieval. The query embedding must use the same model revision/configuration as the indexed chunks.
+Call the ingestion/retrieval contract for each focused query with `brand_id`, query text, optional `source_types`, optional `document_types`, and bounded `top_k`. A specialist agent can filter to `tone_of_voice`, `approved_claims`, or `product_facts`; an empty filter searches all available types. The agreed target is hybrid PostgreSQL full-text + pgvector search, with BGE-M3 dense vectors (1024 dimensions) for semantic retrieval. The document type is prefixed into source chunk embedding input and returned as result metadata; exact stored passages remain unchanged. The query embedding must use the same model revision/configuration as the indexed chunks.
+
+Suggested agent scopes once orchestration is added: tone review searches `tone_of_voice`, `brand_guidelines`, and `glossary`; claim verification searches `approved_claims` and `product_facts`, with `brand_guidelines` / `legal_compliance` when it needs claim-policy requirements. A typed category narrows retrieval but does not establish that a passage supports a finding; the citation and evidence checks still apply.
 
 Every retrieved result must retain:
 
-- `brand_id`, `source_id`, `version_id`, `source_type`
+- `brand_id`, `source_id`, `version_id`, `source_type`, `document_type`
 - exact `chunk_text` and source text or a reliable source/version lookup
 - chunk ID and source location when available
 - retrieval method/rank/score metadata

@@ -60,6 +60,7 @@ def retrieve_document_evidence(
     retriever: KnowledgeRetriever,
     top_k: int = 8,
     source_types: tuple[str, ...] = ("guideline", "approved_fact"),
+    document_types: tuple[str, ...] = (),
 ) -> tuple[EvidenceBundle, ...]:
     """Search once per non-empty parsed block, deduplicating identical queries.
 
@@ -80,6 +81,7 @@ def retrieve_document_evidence(
                 brand_id=brand_id,
                 query=query,
                 source_types=source_types,
+                document_types=document_types,
                 top_k=top_k,
             )
             try:

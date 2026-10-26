@@ -12,13 +12,13 @@ The agreed knowledge store is PostgreSQL with the `pgvector` extension for dense
 
 Implement the path that lets an authorized brand administrator add and manage approved source material, and makes that material available to retrieval. In particular:
 
-1. Accept guideline/rule and approved-fact records associated with a brand.
+1. Accept guideline/rule and approved-fact records associated with a brand, with an organization-selected `document_type` describing the document's review purpose.
 2. Validate required fields and reject malformed or unsupported records with useful errors.
 3. Assign stable source IDs and immutable version IDs (or an equivalent monotonically increasing version) to each published source revision.
 4. Preserve the source text and its provenance. Do not silently rewrite the authoritative text during chunking or embedding.
 5. Split long sources into retrievable chunks while retaining their parent source ID, version, and location in the original source. Store each chunk's exact text; chunking must not replace or mutate the authoritative source text.
 6. Create one dense embedding for each approved chunk using `BAAI/bge-m3` and store it in PostgreSQL through `pgvector` as `vector(1024)`, alongside the chunk text and metadata. Record the model identifier/revision and chunking version so vectors can be rebuilt consistently if the model or preprocessing changes. Use the same model/revision and compatible preprocessing for query embeddings. BGE-M3's model documentation specifies a 1024-dimensional dense vector; see the [official BGE-M3 model card](https://huggingface.co/BAAI/bge-m3).
-7. Maintain a lexical search representation using PostgreSQL full-text search. The intended retrieval capability is hybrid: combine lexical matching for exact terms/names with vector similarity for semantically related passages. Keep the query contract independent of internal ranking details. If vector search is temporarily unavailable during development, report keyword-only behavior honestly; the agreed target for the integrated RAG path is hybrid retrieval.
+7. Maintain a lexical search representation using PostgreSQL full-text search. The intended retrieval capability is hybrid: combine lexical matching for exact terms/names with vector similarity for semantically related passages. Embed the selected document type as a short prefix alongside each chunk (for example, `Document type: tone of voice`), while keeping the stored `chunk_text` exact for citations. Support an optional `document_types` retrieval filter so a tone, claims, or facts agent can constrain evidence to its domain. Keep the query contract independent of internal ranking details. If vector search is temporarily unavailable during development, report keyword-only behavior honestly; the agreed target for the integrated RAG path is hybrid retrieval.
 8. Ensure every query is scoped to the requested brand and only returns active, approved material visible to that brand. Enforce brand filtering as part of the database query/access path for both lexical and vector results.
 9. Support source updates and removals without making old citations point to new text. Re-index changed versions and remove old versions from ordinary retrieval, while retaining or resolving historical versions for existing findings according to the product’s retention policy.
 10. Return enough metadata for the RAG service to validate and display citations. Never return only an opaque similarity score or a chunk with no source identity.
@@ -37,6 +37,7 @@ The following logical record is the expected minimum, regardless of the ingestio
   "source_id": "src_...",
   "brand_id": "brand_...",
   "source_type": "guideline",
+  "document_type": "tone_of_voice",
   "title": "Product naming",
   "status": "active",
   "version_id": "ver_...",
@@ -59,6 +60,7 @@ The following logical record is the expected minimum, regardless of the ingestio
 Requirements:
 
 - `source_type` must distinguish at least `guideline` (a rule/policy) and `approved_fact` (an approved factual assertion). Additional types can be agreed later.
+- `document_type` captures the purpose chosen by the organization at upload: `brand_guidelines`, `tone_of_voice`, `approved_claims`, `product_facts`, `glossary`, `asset_rules`, `legal_compliance`, or `other_reference`. Keep it separate from broad `source_type`; map approved claims and product facts to `approved_fact`, and policy/guidance categories to `guideline`.
 - `source_id` identifies the logical source across revisions. `version_id` identifies one immutable revision. `version` is useful for display and ordering, but `version_id` is the citation key.
 - `text` is the authoritative text for this record/version. If the original document is parsed, keep document-level provenance and locations in `metadata`.
 - Metadata fields may be absent when the source does not have that location type. For example, a text entry may have no page number. Do not fabricate locations.
@@ -96,6 +98,7 @@ One immutable row per source revision:
 | `approval_status` | text, not null | At minimum distinguish `approved` from `pending`/`rejected` |
 | `text` | text, not null | Canonical authoritative text for this revision |
 | `rule_data` | JSONB, not null, default `[]` | Optional structured deterministic rules explicitly confirmed/entered by an admin; never inferred by code from prose alone |
+| `document_type` | text, not null | Purpose selected at upload; copied to every chunk for retrieval filtering |
 | `document_id` | nullable stable ID | Uploaded document identity, when applicable |
 | `document_name` | nullable text | Original filename/title, when available |
 | `metadata` | JSONB, not null, default `{}` | Section, page, language, and other provenance; no invented values |
@@ -139,11 +142,12 @@ One row per retrievable passage. A unique `(version_id, chunk_index)` constraint
 | `source_id` | FK to `knowledge_sources`, not null | Citation source |
 | `version_id` | FK to `knowledge_source_versions`, not null | Exact immutable source revision |
 | `chunk_index` | integer, not null | Order of this chunk within the version |
-| `chunk_text` | text, not null | Exact text embedded and returned to RAG |
+| `chunk_text` | text, not null | Exact source passage returned to RAG and used for citations |
+| `document_type` | text, not null | Copied from the source version; included as context in the embedding input and filterable in SQL |
 | `location` | JSONB, not null, default `{}` | Section/page/character offsets in the canonical source representation, when known |
 | `search_tsv` | `tsvector`, maintained from `chunk_text` | PostgreSQL full-text search representation |
-| `embedding` | `vector(1024)`, not null when indexed | Dense BGE-M3 embedding for `chunk_text` |
-| `embedding_model` | text, not null | Must identify `BAAI/bge-m3` and revision/configuration |
+| `embedding` | `vector(1024)`, not null when indexed | Dense BGE-M3 embedding for `Document type: <human-readable type>\n<chunk_text>` |
+| `embedding_model` | text, not null | Must identify `BAAI/bge-m3`, revision/configuration, and embedding-input format version |
 | `chunking_version` | text, not null | Version of the chunking/preprocessing procedure |
 | `index_status` | text, not null | At minimum `pending`, `ready`, or `failed`; only `ready` rows are searchable |
 | `created_at`, `updated_at` | timestamptz, not null | Index lifecycle timestamps |
@@ -158,7 +162,7 @@ Embedding/index lifecycle requirements:
 
 1. Only approved, active source versions are eligible for ordinary retrieval and embedding generation.
 2. Chunk text, source identity, version, and location are stored together so a vector match can always be traced back to its authoritative passage.
-3. When source text, chunking logic, or embedding model changes, regenerate affected chunks/vectors and avoid mixing incompatible vector dimensions or model versions in the same search operation.
+3. When source text, chunking logic, embedding-input format (including the document-type prefix), or embedding model changes, regenerate affected chunks/vectors and avoid mixing incompatible vector dimensions or model versions in the same search operation. The implementation tag uses `document-type-prefix-v1`; reindex existing approved sources after upgrading to this format.
 4. Model unavailability or an embedding/indexing error must be visible as an ingestion/indexing failure or pending state. Do not mark a source searchable when it has not been indexed successfully.
 5. Keep PostgreSQL migrations/configuration reproducible. The `vector` extension must be enabled in the target database, and extension/index setup must be documented for local development and deployment.
 
@@ -180,9 +184,10 @@ def search_knowledge(request: KnowledgeSearchRequest) -> KnowledgeSearchResponse
 | `brand_id` | string | Required; enforced in every SQL candidate query |
 | `query` | string | Required focused text query; embed with the same `BAAI/bge-m3` revision used for documents |
 | `source_types` | list of strings | Optional; defaults to guideline + approved_fact |
+| `document_types` | list of strings | Optional; filters to the selected purpose values. Empty means all document types. |
 | `top_k` | integer | Optional; default 8, valid range 1–20 |
 
-`KnowledgeSearchResponse` contains `brand_id`, `results`, and `retrieval_method` (`hybrid`, `vector`, or `keyword`). Each result contains `source_id`, `version_id`, `brand_id`, `source_type`, `title`, `version_number`, `chunk_id`, exact `chunk_text`, authoritative `source_text` (or a reliable source/version lookup), `location`, `embedding_model`, and rank/score metadata. Scores are retrieval signals, not confidence or proof of support. No match is a successful response with an empty `results` list. Database/index failures must raise/return an explicit service error, not masquerade as no matches.
+`KnowledgeSearchResponse` contains `brand_id`, `results`, and `retrieval_method` (`hybrid`, `vector`, or `keyword`). Each result contains `source_id`, `version_id`, `brand_id`, `source_type`, `document_type`, `title`, `version_number`, `chunk_id`, exact `chunk_text`, authoritative `source_text` (or a reliable source/version lookup), `location`, `embedding_model`, and rank/score metadata. Scores are retrieval signals, not confidence or proof of support. No match is a successful response with an empty `results` list. Database/index failures must raise/return an explicit service error, not masquerade as no matches.
 
 The interface must never return unapproved/inactive material. A brand authorization layer must validate the caller's access before invoking the function; passing a brand ID alone is not authorization. For the initial local integration, callers may provide an already-authorized brand context from the backend, but the function must still apply the brand filter in SQL.
 
@@ -227,6 +232,7 @@ For `required_text`, return `kind`, `rule_id`, `phrase`, `case_sensitive`, `appl
   "brand_id": "brand_...",
   "query": "What product name is allowed in this sentence?",
   "source_types": ["guideline", "approved_fact"],
+  "document_types": ["tone_of_voice"],
   "top_k": 8
 }
 ```
@@ -244,6 +250,7 @@ For `required_text`, return `kind`, `rule_id`, `phrase`, `case_sensitive`, `appl
       "source_id": "src_...",
       "brand_id": "brand_...",
       "source_type": "guideline",
+      "document_type": "tone_of_voice",
       "title": "Product naming",
       "version_id": "ver_...",
       "version_number": 1,
@@ -269,7 +276,7 @@ For `required_text`, return `kind`, `rule_id`, `phrase`, `case_sensitive`, `appl
 
 Requirements:
 
-- Every result must include `brand_id`, `source_id`, `source_type`, `version_id`, `version_number`, and the exact retrieved `chunk_text`. Include `source_text` when practical; otherwise provide an authoritative lookup by `source_id` + `version_id` for citation validation.
+- Every result must include `brand_id`, `source_id`, `source_type`, `document_type`, `version_id`, `version_number`, and the exact retrieved `chunk_text`. Include `source_text` when practical; otherwise provide an authoritative lookup by `source_id` + `version_id` for citation validation.
 - `location` must refer to the original material and identify the chunk’s location where known. Use character offsets only when they are measured against a clearly defined canonical text representation.
 - Response-level `retrieval_method` identifies the method actually used, such as `keyword`, `vector`, or `hybrid`. A result's `score` is optional and must not be presented as confidence that a source supports a claim.
 - Results must be deterministic in shape, even when the result list is empty. An empty result is a valid response, not an error.

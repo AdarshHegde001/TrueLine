@@ -15,7 +15,13 @@ const projectRoot = path.resolve(__dirname, '..');
 dotenv.config({ path: path.join(__dirname, '.env') });
 const app = express();
 const port = Number(process.env.PORT || 3001);
+const organizationBrandId = process.env.TRUELINE_BRAND_ID || 'brand_lumina';
+const organizationName = process.env.TRUELINE_ORGANIZATION_NAME || 'Lumina Studio';
 const maxFileBytes = 15 * 1024 * 1024;
+const documentTypes = new Set([
+  'brand_guidelines', 'tone_of_voice', 'approved_claims', 'product_facts',
+  'glossary', 'asset_rules', 'legal_compliance', 'other_reference',
+]);
 
 app.use(cors({ origin: process.env.FRONTEND_ORIGIN || 'http://localhost:5173' }));
 app.use(express.json({ limit: '1mb' }));
@@ -122,6 +128,7 @@ app.get('/api/health', async (_req, res) => {
   try {
     const workerInfo = await worker.ready;
     res.json({ status: 'ready', python: 'ready', embedder: workerInfo.embedder,
+      organizationName,
       geminiConfigured: Boolean(process.env.GEMINI_API_KEY) });
   } catch (error) {
     res.status(503).json({ status: 'starting_or_failed', error: error.message });
@@ -130,9 +137,9 @@ app.get('/api/health', async (_req, res) => {
 
 app.post('/api/knowledge', upload.single('file'), async (req, res, next) => {
   try {
-    const category = req.body.category;
-    if (!['rulebook', 'resource'].includes(category)) {
-      throw Object.assign(new Error('Category must be rulebook or resource.'), { status: 400 });
+    const documentType = req.body.documentType;
+    if (!documentTypes.has(documentType)) {
+      throw Object.assign(new Error('Choose a supported document type.'), { status: 400 });
     }
     let ruleData = [];
     if (req.body.ruleData?.trim()) {
@@ -142,15 +149,12 @@ app.post('/api/knowledge', upload.single('file'), async (req, res, next) => {
         throw Object.assign(new Error('Rules must be a JSON array.'), { status: 400 });
       }
     }
-    if (category === 'resource' && ruleData.length) {
-      throw Object.assign(new Error('Structured deterministic rules can only be attached to a rulebook.'), { status: 400 });
-    }
     const payload = filePayload(req.file);
     const result = await worker.call('ingest', {
       ...payload,
-      brandId: requiredField(req.body.brandId, 'Brand ID'),
+      brandId: organizationBrandId,
       title: requiredField(req.body.title || req.file.originalname, 'Title'),
-      category,
+      documentType,
       ruleData,
       approved: req.body.approved !== 'false',
     });
@@ -161,10 +165,9 @@ app.post('/api/knowledge', upload.single('file'), async (req, res, next) => {
 app.post('/api/review', upload.single('file'), async (req, res, next) => {
   try {
     const file = filePayload(req.file);
-    const brandId = requiredField(req.body.brandId, 'Brand ID');
     const prepared = await worker.call('review', {
       ...file,
-      brandId,
+      brandId: organizationBrandId,
       channel: String(req.body.channel || '').trim(),
     });
     const context = prepared.ai_context;

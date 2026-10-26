@@ -43,7 +43,7 @@ class FakeEmbedder:
     Its tag says so, so fake vectors can never be confused with real ones."""
 
     dim = 1024
-    tag = "FAKE-hash-bow-test-only"
+    tag = "FAKE-hash-bow-test-only|document-type-prefix-v1"
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         out = []

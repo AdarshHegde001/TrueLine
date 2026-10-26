@@ -26,9 +26,11 @@ WHERE c.brand_id = %(brand)s AND v.brand_id = %(brand)s AND s.brand_id = %(brand
   AND v.status = 'active' AND v.approval_status = 'approved'
   AND s.current_version_id = v.version_id
   AND s.source_type = ANY(%(types)s)
+  AND (cardinality(%(document_types)s::text[]) = 0
+       OR c.document_type = ANY(%(document_types)s::text[]))
 """
 _COLS = ("c.chunk_id, c.chunk_text, c.location, c.embedding_model, c.source_id, c.version_id, "
-         "c.brand_id, s.source_type, s.title, v.version_number, v.text AS source_text")
+         "c.brand_id, c.document_type, s.source_type, s.title, v.version_number, v.text AS source_text")
 
 
 def _tsquery(q: str) -> Optional[str]:
@@ -43,12 +45,21 @@ class KnowledgeService:
         self._connect = conn_factory or (lambda: connect(self.s))
 
     def search(self, req: KnowledgeSearchRequest) -> KnowledgeSearchResponse:
-        params = {"brand": req.brand_id, "tag": self.embedder.tag, "types": list(req.source_types)}
+        params = {
+            "brand": req.brand_id,
+            "tag": self.embedder.tag,
+            "types": list(req.source_types),
+            "document_types": list(req.document_types),
+        }
         pool = self.s.candidate_pool
 
         qvec, vec_err = None, None
         try:
-            qvec = self.embedder.embed([req.query])[0]
+            query_text = req.query
+            if len(req.document_types) == 1:
+                query_type = req.document_types[0].replace("_", " ")
+                query_text = f"Document type: {query_type}\n{req.query}"
+            qvec = self.embedder.embed([query_text])[0]
             if len(qvec) != self.s.embedding_dim:
                 raise ValueError(f"query embedding dim {len(qvec)} != {self.s.embedding_dim}")
         except Exception as e:
@@ -99,6 +110,7 @@ class KnowledgeService:
             RetrievedChunk(
                 source_id=e["row"]["source_id"], version_id=e["row"]["version_id"],
                 brand_id=e["row"]["brand_id"], source_type=e["row"]["source_type"],
+                document_type=e["row"]["document_type"],
                 title=e["row"]["title"], version_number=e["row"]["version_number"],
                 chunk_id=e["row"]["chunk_id"], chunk_text=e["row"]["chunk_text"],
                 source_text=e["row"]["source_text"], location=e["row"]["location"] or {},

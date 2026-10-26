@@ -19,7 +19,10 @@ class Settings:
     @property
     def embedding_tag(self) -> str:
         """Stored in knowledge_chunks.embedding_model; queries must match it."""
-        return f"{self.embedding_model_name}@{self.embedding_revision}|dense|normalized"
+        return (
+            f"{self.embedding_model_name}@{self.embedding_revision}"
+            "|dense|normalized|document-type-prefix-v1"
+        )
 
 
 def get_settings() -> Settings:

@@ -6,6 +6,11 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 SourceType = Literal["guideline", "approved_fact"]
+DocumentType = Literal[
+    "brand_guidelines", "tone_of_voice", "approved_claims", "product_facts",
+    "glossary", "asset_rules", "legal_compliance", "other_reference",
+]
+DEFAULT_DOCUMENT_TYPE: DocumentType = "other_reference"
 DEFAULT_SOURCE_TYPES: list[str] = ["guideline", "approved_fact"]
 
 
@@ -15,6 +20,7 @@ class KnowledgeSearchRequest(BaseModel):
     brand_id: str = Field(min_length=1)
     query: str = Field(min_length=1)
     source_types: tuple[SourceType, ...] = tuple(DEFAULT_SOURCE_TYPES)
+    document_types: tuple[DocumentType, ...] = ()
     top_k: int = Field(default=8, ge=1, le=20)
 
     @field_validator("query")
@@ -41,6 +47,7 @@ class RetrievedChunk(BaseModel):
     source_id: str
     version_id: str
     source_type: SourceType
+    document_type: DocumentType = DEFAULT_DOCUMENT_TYPE
     title: str
     version_number: int
     chunk_id: str
@@ -67,6 +74,7 @@ class KnowledgeSearchResponse(BaseModel):
 class SourceCreate(BaseModel):
     brand_id: str = Field(min_length=1)
     source_type: SourceType
+    document_type: DocumentType = DEFAULT_DOCUMENT_TYPE
     title: str = Field(min_length=1)
     text: str = Field(min_length=1)
     document_id: Optional[str] = None
@@ -86,6 +94,7 @@ class SourceCreate(BaseModel):
 class SourceUpdate(BaseModel):
     brand_id: str = Field(min_length=1)
     source_id: str = Field(min_length=1)
+    document_type: Optional[DocumentType] = None
     text: str = Field(min_length=1)
     title: Optional[str] = None
     document_id: Optional[str] = None
@@ -100,6 +109,7 @@ class SourceVersionRecord(BaseModel):
     source_id: str
     brand_id: str
     source_type: SourceType
+    document_type: DocumentType = DEFAULT_DOCUMENT_TYPE
     title: str
     status: str
     approval_status: str

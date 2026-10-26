@@ -70,9 +70,12 @@ def _ingest(request, parse_document, ingest, SourceCreate, db, settings, embedde
     data = base64.b64decode(request["fileBase64"], validate=True)
     document = parse_document(data, document_name=request["fileName"],
                               content_type=request.get("contentType"))
+    document_type = request["documentType"]
+    source_type = "approved_fact" if document_type in {"approved_claims", "product_facts"} else "guideline"
     record = SourceCreate(
         brand_id=request["brandId"],
-        source_type="guideline" if request["category"] == "rulebook" else "approved_fact",
+        source_type=source_type,
+        document_type=document_type,
         title=request["title"],
         text=document.text,
         document_name=document.document_name,
@@ -81,6 +84,7 @@ def _ingest(request, parse_document, ingest, SourceCreate, db, settings, embedde
             "parser_version": document.parser_version,
             "offset_unit": document.offset_unit,
             "parse_warnings": list(document.warnings),
+            "document_type": document_type,
         },
         rule_data=request.get("ruleData") or [],
         approved=bool(request.get("approved", True)),
@@ -93,6 +97,7 @@ def _ingest(request, parse_document, ingest, SourceCreate, db, settings, embedde
         "version": result.version,
         "title": result.title,
         "source_type": result.source_type,
+        "document_type": document_type,
         "status": result.status,
         "approval_status": result.approval_status,
         "chunk_count": len(ingest.chunk_text(document.text, settings.chunk_max_chars)),

@@ -41,6 +41,7 @@ def create_source(conn, embedder: Embedder, payload: SourceCreate,
             conn, embedder, s, source_id=source_id, brand_id=payload.brand_id, number=1,
             text=payload.text, document_id=payload.document_id,
             document_name=payload.document_name, metadata=payload.metadata,
+            document_type=payload.document_type,
             rule_data=payload.rule_data, approved=payload.approved, title=payload.title,
         )
     conn.commit()
@@ -74,6 +75,11 @@ def update_source(conn, embedder: Embedder, payload: SourceUpdate,
             ).fetchone()
             rule_data = list((current or {}).get("rule_data") or [])
         new_title = payload.title or row["title"]
+        current_type = conn.execute(
+            "SELECT document_type FROM knowledge_source_versions WHERE source_id=%s "
+            "ORDER BY version_number DESC LIMIT 1", (payload.source_id,)
+        ).fetchone()
+        document_type = payload.document_type or (current_type or {}).get("document_type", "other_reference")
         if payload.title:
             conn.execute(
                 "UPDATE knowledge_sources SET title=%s, updated_at=now() "
@@ -84,6 +90,7 @@ def update_source(conn, embedder: Embedder, payload: SourceUpdate,
             conn, embedder, s, source_id=payload.source_id, brand_id=payload.brand_id,
             number=number, text=payload.text, document_id=payload.document_id,
             document_name=payload.document_name, metadata=payload.metadata,
+            document_type=document_type,
             rule_data=rule_data, approved=payload.approved, title=new_title,
         )
     conn.commit()
@@ -93,14 +100,15 @@ def update_source(conn, embedder: Embedder, payload: SourceUpdate,
 
 
 def _insert_version(conn, embedder, s: Settings, *, source_id, brand_id, number, text,
-                    document_id, document_name, metadata, rule_data, approved, title) -> str:
+                    document_id, document_name, metadata, document_type, rule_data, approved, title) -> str:
     version_id = _id("ver")
+    metadata = {**metadata, "document_type": document_type}
     conn.execute(
         "INSERT INTO knowledge_source_versions (version_id, source_id, brand_id, version_number,"
-        " status, approval_status, text, document_id, document_name, metadata, rule_data) "
-        "VALUES (%s,%s,%s,%s,'pending',%s,%s,%s,%s,%s,%s)",
+        " status, approval_status, text, document_id, document_name, metadata, rule_data, document_type) "
+        "VALUES (%s,%s,%s,%s,'pending',%s,%s,%s,%s,%s,%s,%s)",
         (version_id, source_id, brand_id, number, "approved" if approved else "pending",
-         text, document_id, document_name, Jsonb(metadata), Jsonb(rule_data)),
+         text, document_id, document_name, Jsonb(metadata), Jsonb(rule_data), document_type),
     )
     chunks = chunk_text(text, s.chunk_max_chars)
     if not chunks:
@@ -117,10 +125,10 @@ def _insert_version(conn, embedder, s: Settings, *, source_id, brand_id, number,
         loc.update(char_start=c.char_start, char_end=c.char_end, offset_base="version_text")
         conn.execute(
             "INSERT INTO knowledge_chunks (chunk_id, brand_id, source_id, version_id, chunk_index,"
-            " chunk_text, location, embedding_model, chunking_version, index_status) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'pending')",
+            " chunk_text, location, embedding_model, chunking_version, index_status, document_type) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'pending',%s)",
             (_id("chunk"), brand_id, source_id, version_id, c.index, c.text, Jsonb(loc),
-             embedder.tag, s.chunking_version),
+             embedder.tag, s.chunking_version, document_type),
         )
     return version_id
 
@@ -141,13 +149,17 @@ def index_version(conn, embedder: Embedder, version_id: str,
         raise ValidationFailed("only approved versions can be indexed")
 
     rows = conn.execute(
-        "SELECT chunk_id, chunk_text FROM knowledge_chunks WHERE version_id=%s ORDER BY chunk_index",
+        "SELECT chunk_id, chunk_text, document_type FROM knowledge_chunks WHERE version_id=%s ORDER BY chunk_index",
         (version_id,),
     ).fetchall()
     ids = [r["chunk_id"] for r in rows]
     conn.commit()  # close the read transaction; writes below are their own transaction
     try:
-        vecs = embedder.embed([r["chunk_text"] for r in rows])
+        # Purpose informs the vector without changing the exact cited passage.
+        vecs = embedder.embed([
+            f"Document type: {r['document_type'].replace('_', ' ')}\n{r['chunk_text']}"
+            for r in rows
+        ])
         if len(vecs) != len(ids) or any(len(x) != s.embedding_dim for x in vecs):
             raise IndexingError(f"embedder returned wrong count/dimension (expected {s.embedding_dim})")
     except Exception as e:  # model missing/OOM/etc. => visible failed state, not searchable
@@ -234,7 +246,7 @@ def get_version(conn, brand_id: str, source_id: str, version_id: str) -> SourceV
     r = conn.execute(
         "SELECT s.source_id, s.brand_id, s.source_type, s.title, s.updated_at, v.version_id,"
         " v.version_number, v.status, v.approval_status, v.text, v.metadata, v.created_at,"
-        " v.document_id, v.document_name, v.rule_data "
+        " v.document_id, v.document_name, v.rule_data, v.document_type "
         "FROM knowledge_source_versions v JOIN knowledge_sources s ON s.source_id=v.source_id "
         "WHERE v.version_id=%s AND v.source_id=%s AND v.brand_id=%s",
         (version_id, source_id, brand_id),
@@ -248,6 +260,7 @@ def get_version(conn, brand_id: str, source_id: str, version_id: str) -> SourceV
         meta.setdefault("document_name", r["document_name"])
     return SourceVersionRecord(
         source_id=r["source_id"], brand_id=r["brand_id"], source_type=r["source_type"],
+        document_type=r["document_type"],
         title=r["title"], status=r["status"], approval_status=r["approval_status"],
         version_id=r["version_id"], version=r["version_number"], text=r["text"], metadata=meta,
         rule_data=list(r["rule_data"] or []),

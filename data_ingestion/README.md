@@ -31,6 +31,15 @@ rules = get_deterministic_rules(brand_id="brand_lumina", channel="advertisement"
 ```
 Search returns a mapping with the canonical `rag.retrieval.models.KnowledgeSearchResponse` fields;
 the RAG adapter validates that mapping at the boundary.
+Each uploaded source also carries an organization-selected `document_type`:
+`brand_guidelines`, `tone_of_voice`, `approved_claims`, `product_facts`,
+`glossary`, `asset_rules`, `legal_compliance`, or `other_reference`. It is stored on the immutable version and every
+chunk, prefixed into BGE-M3 embedding input, and returned in each retrieval result. Set
+`document_types=("tone_of_voice",)` on `KnowledgeSearchRequest` to scope retrieval to a
+specialist agent's evidence; an empty tuple searches every type.
+The embedding-input format is versioned in the stored embedding tag. After upgrading an existing
+database, reindex approved sources with the same embedder configured for the backend (`python -m
+trueline_ingestion reindex`; add `--fake` only when the database was indexed with the fake embedder).
 Citation validation helpers (`trueline_ingestion/ingest.py`): `get_version(conn, brand_id, source_id, version_id)`
 and `quote_exists(conn, brand_id, source_id, version_id, quote)`. Structured rules are saved on immutable
 versions as `rule_data` JSONB and exposed by `get_deterministic_rules`; rules only become available when
