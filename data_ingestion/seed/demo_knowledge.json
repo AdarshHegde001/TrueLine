@@ -1,0 +1,27 @@
+[
+  {"brand_id": "brand_lumina", "source_type": "guideline", "title": "Product naming",
+   "text": "Always write the product name as Lumina Glow Serum. Never abbreviate it as LGS or write it in lowercase.",
+   "metadata": {"document_name": "Lumina Brand Guide (demo)", "section": "Product naming", "page": 4, "language": "en"}},
+  {"brand_id": "brand_lumina", "source_type": "guideline", "title": "Claims policy: efficacy",
+   "text": "Efficacy claims need a cited clinical study on file before publication. Never use absolute wording such as 'all', 'always', 'guaranteed', '100%' or 'cure' in efficacy claims. Prefer wording such as 'visibly reduces the look of fine lines'.",
+   "metadata": {"document_name": "Lumina Claims Policy (demo)", "section": "3.2", "page": 7, "language": "en"}},
+  {"brand_id": "brand_lumina", "source_type": "guideline", "title": "Voice and tone",
+   "text": "Our voice is warm, calm and expert. Avoid slang, hype and exclamation-heavy copy. Do not use fear-based messaging about ageing or appearance.",
+   "metadata": {"document_name": "Lumina Brand Guide (demo)", "section": "Voice", "page": 2, "language": "en"}},
+  {"brand_id": "brand_lumina", "source_type": "guideline", "title": "Required disclaimer",
+   "text": "Every skincare social post that mentions results must include the disclaimer: 'Results vary by individual.'",
+   "metadata": {"document_name": "Lumina Claims Policy (demo)", "section": "4.1", "page": 9, "language": "en"}},
+  {"brand_id": "brand_lumina", "source_type": "approved_fact", "title": "Glow Serum price",
+   "text": "Lumina Glow Serum 30 ml is priced at INR 1,499 as of October 2026.",
+   "metadata": {"document_name": "Lumina Approved Facts (demo)", "section": "Pricing", "language": "en"}},
+  {"brand_id": "brand_lumina", "source_type": "approved_fact", "title": "Glow Serum key ingredients",
+   "text": "Lumina Glow Serum contains 2% niacinamide and 0.5% hyaluronic acid. It is dermatologist tested on 40 volunteers over 4 weeks.",
+   "metadata": {"document_name": "Lumina Approved Facts (demo)", "section": "Ingredients", "language": "en"}},
+  {"brand_id": "brand_lumina", "source_type": "approved_fact", "title": "Company founding",
+   "text": "Lumina Skincare was founded in Bengaluru in 2019.",
+   "metadata": {"document_name": "Lumina Approved Facts (demo)", "section": "Company", "language": "en"}},
+
+  {"brand_id": "brand_other", "source_type": "guideline", "title": "Product naming",
+   "text": "Always write the product name as Zenith Pro Max. Never use the word Lumina.",
+   "metadata": {"document_name": "Other Brand Guide (demo)", "section": "Product naming", "language": "en"}}
+]

@@ -1,0 +1,18 @@
+# Local dev database: PostgreSQL 16 + pgvector preinstalled. Migrations enable the extension.
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: trueline
+      POSTGRES_PASSWORD: trueline
+      POSTGRES_DB: trueline
+    ports:
+      - "5433:5432"
+    volumes:
+      - trueline_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trueline"]
+      interval: 5s
+      retries: 10
+volumes:
+  trueline_pg:
