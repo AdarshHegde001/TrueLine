@@ -9,7 +9,7 @@ retrieval fused with Reciprocal Rank Fusion.
 cd data_ingestion
 docker compose up -d db                                   # Postgres 16 + pgvector
 pip install -r requirements.txt
-export DATABASE_URL=postgresql://trueline:trueline@localhost:5432/trueline
+export DATABASE_URL=postgresql://trueline:trueline@localhost:5433/trueline
 python -m trueline_ingestion migrate
 python -m trueline_ingestion seed                         # downloads BGE-M3 (~2.3 GB) first time
 python -m trueline_ingestion search --brand brand_lumina --query "clinically proven to remove all wrinkles"
@@ -18,17 +18,23 @@ Add `--fake` to any command to skip the model download (test-only hash embedder;
 
 ## Tests
 ```bash
-export TEST_DATABASE_URL=postgresql://trueline:trueline@localhost:5432/trueline   # tests DROP knowledge_* tables!
+docker compose exec db createdb -U trueline trueline_test
+export TEST_DATABASE_URL=postgresql://trueline:trueline@localhost:5433/trueline_test # test fixture DROPs knowledge_* tables
 pytest
 ```
 
 ## What the RAG workstream calls
 ```python
-from trueline_ingestion import KnowledgeSearchRequest, search_knowledge
+from trueline_ingestion import KnowledgeSearchRequest, get_deterministic_rules, search_knowledge
 res = search_knowledge(KnowledgeSearchRequest(brand_id="brand_lumina", query="...", top_k=8))
+rules = get_deterministic_rules(brand_id="brand_lumina", channel="advertisement")
 ```
+Search returns a mapping with the canonical `rag.retrieval.models.KnowledgeSearchResponse` fields;
+the RAG adapter validates that mapping at the boundary.
 Citation validation helpers (`trueline_ingestion/ingest.py`): `get_version(conn, brand_id, source_id, version_id)`
-and `quote_exists(conn, brand_id, source_id, version_id, quote)`.
+and `quote_exists(conn, brand_id, source_id, version_id, quote)`. Structured rules are saved on immutable
+versions as `rule_data` JSONB and exposed by `get_deterministic_rules`; rules only become available when
+their containing version is active and approved.
 
 Errors: `ValidationFailed`, `NotFound`, `IndexingError`, `SearchServiceError` (`errors.py`).
 Empty result = valid success. DB/embedding failure = `SearchServiceError`, never an empty list.

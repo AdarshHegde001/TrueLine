@@ -1,9 +1,8 @@
-from .models import (KnowledgeSearchRequest, KnowledgeSearchResponse, KnowledgeSearchResult,
-                     SourceCreate, SourceUpdate, SourceVersionRecord)
-from .search import KnowledgeService, search_knowledge
+from .models import KnowledgeSearchRequest, KnowledgeSearchResponse, SourceCreate, SourceUpdate, SourceVersionRecord
+from .search import KnowledgeService, get_deterministic_rules, search_knowledge
 
 __all__ = [
-    "KnowledgeSearchRequest", "KnowledgeSearchResponse", "KnowledgeSearchResult",
+    "KnowledgeSearchRequest", "KnowledgeSearchResponse",
     "SourceCreate", "SourceUpdate", "SourceVersionRecord",
-    "KnowledgeService", "search_knowledge",
+    "KnowledgeService", "search_knowledge", "get_deterministic_rules",
 ]

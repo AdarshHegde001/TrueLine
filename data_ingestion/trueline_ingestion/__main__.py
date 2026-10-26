@@ -43,7 +43,7 @@ def main() -> None:
         res = svc.search(KnowledgeSearchRequest(brand_id=a.brand, query=a.query, top_k=a.top_k))
         print(f"method={res.retrieval_method}  n={len(res.results)}")
         for r in res.results:
-            print(f"  #{r.retrieval.rank} [{r.source_type}] {r.title} ({r.source_id}/{r.version_id} v{r.version})"
+            print(f"  #{r.rank} [{r.source_type}] {r.title} ({r.source_id}/{r.version_id} v{r.version_number})"
                   f"\n      {r.chunk_text[:110]}")
 
 

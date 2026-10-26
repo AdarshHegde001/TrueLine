@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS knowledge_source_versions (
     status           TEXT NOT NULL CHECK (status IN ('pending', 'active', 'inactive', 'archived')),
     approval_status  TEXT NOT NULL CHECK (approval_status IN ('approved', 'pending', 'rejected')),
     text             TEXT NOT NULL,
+    rule_data        JSONB NOT NULL DEFAULT '[]'::jsonb,
     document_id      TEXT,
     document_name    TEXT,
     metadata         JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -32,6 +33,14 @@ CREATE TABLE IF NOT EXISTS knowledge_source_versions (
     -- brand on a version must equal brand on its source
     FOREIGN KEY (source_id, brand_id) REFERENCES knowledge_sources (source_id, brand_id)
 );
+-- Keep this migration safe for databases created by the earlier schema draft.
+ALTER TABLE knowledge_source_versions
+    ADD COLUMN IF NOT EXISTS rule_data JSONB NOT NULL DEFAULT '[]'::jsonb;
+DO $$ BEGIN
+    ALTER TABLE knowledge_source_versions
+        ADD CONSTRAINT knowledge_source_versions_rule_data_array
+        CHECK (jsonb_typeof(rule_data) = 'array');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 CREATE INDEX IF NOT EXISTS idx_versions_brand_status ON knowledge_source_versions (brand_id, status);
 
 DO $$ BEGIN

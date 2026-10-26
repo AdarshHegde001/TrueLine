@@ -25,7 +25,7 @@ class Settings:
 def get_settings() -> Settings:
     return Settings(
         database_url=os.environ.get(
-            "DATABASE_URL", "postgresql://trueline:trueline@localhost:5432/trueline"
+            "DATABASE_URL", "postgresql://trueline:trueline@localhost:5433/trueline"
         ),
         embedding_model_name=os.environ.get("EMBEDDING_MODEL", "BAAI/bge-m3"),
         embedding_revision=os.environ.get("EMBEDDING_REVISION", "main"),

@@ -95,10 +95,38 @@ One immutable row per source revision:
 | `status` | text, not null | `pending`, `active`, `inactive`, or `archived` |
 | `approval_status` | text, not null | At minimum distinguish `approved` from `pending`/`rejected` |
 | `text` | text, not null | Canonical authoritative text for this revision |
+| `rule_data` | JSONB, not null, default `[]` | Optional structured deterministic rules explicitly confirmed/entered by an admin; never inferred by code from prose alone |
 | `document_id` | nullable stable ID | Uploaded document identity, when applicable |
 | `document_name` | nullable text | Original filename/title, when available |
 | `metadata` | JSONB, not null, default `{}` | Section, page, language, and other provenance; no invented values |
 | `created_at` | timestamptz, not null | Revision creation time |
+
+`rule_data` is an array. Each entry has a `rule_id` and `kind`, and the retrieval/rule adapter maps it to the RAG typed rule models. Minimum supported forms:
+
+```json
+[
+  {
+    "rule_id": "rule_123",
+    "kind": "terminology",
+    "mode": "replace_with_preferred",
+    "term": "Tru Line",
+    "replacement": "Trueline",
+    "case_sensitive": false,
+    "whole_word": true,
+    "severity": "medium",
+    "applies_to_channels": []
+  },
+  {
+    "rule_id": "rule_124",
+    "kind": "required_text",
+    "phrase": "Terms and conditions apply.",
+    "case_sensitive": false,
+    "applies_to_channels": ["advertisement"]
+  }
+]
+```
+
+The source identity/version and source excerpt for each structured rule come from the containing approved version; the adapter attaches them as the rule's `SourceReference`. Supported terminology modes are `banned` and `replace_with_preferred`. Required text is checked as a literal phrase with whitespace-insensitive matching. Admin confirmation is required before rule data is active. Arbitrary natural-language rules remain available to retrieval/AI review and must not be treated as deterministic checks unless they have an explicit supported structured representation.
 
 ### `knowledge_chunks`
 
@@ -138,7 +166,7 @@ Use the official `BAAI/bge-m3` dense embedding output. The model supports dense,
 
 ## Stable RAG retrieval interface
 
-The ingestion/retrieval module must expose this logical Python operation to the review pipeline. If the backend later exposes it over HTTP, keep the request and response fields identical and provide an adapter; RAG business logic must depend on this shape, not on SQL table details.
+The ingestion/retrieval module must expose this logical Python operation to the review pipeline. The canonical Pydantic request/response models live in `rag.retrieval.models` (`KnowledgeSearchRequest` and `KnowledgeSearchResponse`); ingestion should import and return those models, or an exactly compatible mapping. If the backend exposes retrieval over HTTP, keep these fields identical and implement an adapter. RAG business logic depends on this shape, not on SQL table details.
 
 ```python
 def search_knowledge(request: KnowledgeSearchRequest) -> KnowledgeSearchResponse:
@@ -162,6 +190,36 @@ The interface must never return unapproved/inactive material. A brand authorizat
 
 The exact transport (direct Python service call or HTTP endpoint) should match the backend architecture the team agrees on. The logical request and response below are the contract either way. Do not build a second public API solely to satisfy this draft if the backend already provides an agreed internal interface.
 
+In addition to semantic/lexical search, expose a structured-rule read operation for deterministic checks. Search is query-dependent and may not return every terminology/disclaimer rule, so the RAG service must not rely on top-k search to load rules that need to run against the full submission.
+
+```python
+def get_deterministic_rules(*, brand_id: str, channel: str | None) -> list[dict]:
+    """Return all active, approved structured rules applicable to this brand/channel."""
+```
+
+Each returned object is one `rule_data` entry augmented with its containing approved source identity/version:
+
+```json
+{
+  "rule_id": "rule_123",
+  "kind": "terminology",
+  "mode": "replace_with_preferred",
+  "term": "Tru Line",
+  "replacement": "Trueline",
+  "case_sensitive": false,
+  "whole_word": true,
+  "severity": "medium",
+  "applies_to_channels": [],
+  "source_id": "src_...",
+  "version_id": "ver_...",
+  "source_type": "guideline",
+  "source_title": "Product naming",
+  "source_excerpt": "Use the product name Trueline exactly as written. Do not use Tru Line."
+}
+```
+
+For `required_text`, return `kind`, `rule_id`, `phrase`, `case_sensitive`, `applies_to_channels`, and the same source fields. The operation must return all active approved applicable structured rules, not a ranked top-k subset; an empty list means no structured deterministic rules are configured. Only the ingestion/admin workflow marks structured rule data approved. The RAG adapter at `rag.rules.rules_from_ingestion_records` rejects malformed/unknown rule kinds rather than silently skipping them. If no channel is supplied, channel-specific records are not applicable and must not be represented as passed.
+
 ### Request
 
 ```json
@@ -169,10 +227,7 @@ The exact transport (direct Python service call or HTTP endpoint) should match t
   "brand_id": "brand_...",
   "query": "What product name is allowed in this sentence?",
   "source_types": ["guideline", "approved_fact"],
-  "top_k": 8,
-  "filters": {
-    "status": "active"
-  }
+  "top_k": 8
 }
 ```
 
@@ -183,6 +238,7 @@ The exact transport (direct Python service call or HTTP endpoint) should match t
 ```json
 {
   "brand_id": "brand_...",
+  "retrieval_method": "hybrid",
   "results": [
     {
       "source_id": "src_...",
@@ -190,10 +246,14 @@ The exact transport (direct Python service call or HTTP endpoint) should match t
       "source_type": "guideline",
       "title": "Product naming",
       "version_id": "ver_...",
-      "version": 1,
+      "version_number": 1,
       "text": "Use the product name Trueline exactly as written.",
+      "source_text": "Use the product name Trueline exactly as written.",
       "chunk_id": "chunk_...",
       "chunk_text": "Use the product name Trueline exactly as written.",
+      "embedding_model": "BAAI/bge-m3@<revision>",
+      "rank": 1,
+      "score": 0.92,
       "location": {
         "document_id": "doc_...",
         "document_name": "Brand guide.pdf",
@@ -201,11 +261,6 @@ The exact transport (direct Python service call or HTTP endpoint) should match t
         "page": 4,
         "char_start": 1820,
         "char_end": 1878
-      },
-      "retrieval": {
-        "method": "keyword",
-        "rank": 1,
-        "score": null
       }
     }
   ]
@@ -214,9 +269,9 @@ The exact transport (direct Python service call or HTTP endpoint) should match t
 
 Requirements:
 
-- Every result must include `brand_id`, `source_id`, `source_type`, `version_id`, and the exact retrieved `chunk_text`. Include the full source `text` when practical; otherwise provide an authoritative lookup by `source_id` + `version_id` for citation validation.
+- Every result must include `brand_id`, `source_id`, `source_type`, `version_id`, `version_number`, and the exact retrieved `chunk_text`. Include `source_text` when practical; otherwise provide an authoritative lookup by `source_id` + `version_id` for citation validation.
 - `location` must refer to the original material and identify the chunk’s location where known. Use character offsets only when they are measured against a clearly defined canonical text representation.
-- `retrieval.method` identifies the method actually used, such as `keyword`, `vector`, or `hybrid`. A score is optional and must not be presented as confidence that a source supports a claim.
+- Response-level `retrieval_method` identifies the method actually used, such as `keyword`, `vector`, or `hybrid`. A result's `score` is optional and must not be presented as confidence that a source supports a claim.
 - Results must be deterministic in shape, even when the result list is empty. An empty result is a valid response, not an error.
 - Results must be scoped to the requested brand on the server/data-access layer, not merely filtered by the caller after retrieval.
 - Retrieval relevance is not semantic proof. The RAG service remains responsible for checking whether a source actually supports a finding.
@@ -260,6 +315,7 @@ Keep sophisticated ranking, OCR/scanned documents, and ingestion UI details out 
 - [ ] PostgreSQL stores versioned source/chunk records and their provenance; the target database has a reproducible `pgvector` extension setup.
 - [ ] BGE-M3 dense vectors (1024 dimensions) are generated with a recorded model revision/configuration and stored per chunk.
 - [ ] A query accepts a brand ID, focused text query, optional source types, and bounded `top_k`.
+- [ ] A structured-rule operation returns all active, approved deterministic rules applicable to a brand/channel, with source ID/version/excerpt attached.
 - [ ] Retrieval supports the agreed lexical/vector strategy and reports the actual method used; keyword-only fallback is labeled honestly.
 - [ ] Every returned chunk includes the required identity, exact text, and available provenance/location.
 - [ ] A query for one brand cannot return another brand’s sources.

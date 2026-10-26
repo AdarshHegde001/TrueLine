@@ -104,11 +104,11 @@ def test_cross_brand_citation_lookup_hidden(conn):
 def test_unapproved_and_deactivated_excluded(conn, svc):
     pend = add(conn, "b1", "Draft rule", "Zebra rule pending approval.", approved=False)
     assert pend.status == "pending" and pend.approval_status == "pending"
-    assert q(svc, "b1", "zebra rule").results == []
+    assert not q(svc, "b1", "zebra rule").results
     ok = add(conn, "b1", "Live rule", "Giraffe rule that is live.")
     assert q(svc, "b1", "giraffe").results
     ingest.deactivate_source(conn, "b1", ok.source_id)
-    assert q(svc, "b1", "giraffe").results == []
+    assert not q(svc, "b1", "giraffe").results
     # historical version still resolvable
     assert ingest.get_version(conn, "b1", ok.source_id, ok.version_id).text.startswith("Giraffe")
     # admin approval makes the pending one searchable
@@ -131,17 +131,17 @@ def test_result_has_citation_metadata_and_method(conn, svc):
     assert res.retrieval_method == "hybrid"
     r = res.results[0]
     assert r.source_id and r.version_id and r.brand_id == "b1" and r.chunk_id
-    assert r.chunk_text in r.text
+    assert r.chunk_text in r.source_text
     assert r.location["page"] == 4 and r.location["document_name"] == "Brand guide.pdf"
-    assert r.text[r.location["char_start"]:r.location["char_end"]] == r.chunk_text
-    assert r.retrieval.method == "hybrid" and r.retrieval.rank == 1
+    assert r.source_text[r.location["char_start"]:r.location["char_end"]] == r.chunk_text
+    assert r.rank == 1 and r.score is not None
     assert r.embedding_model == EMB.tag
 
 
 def test_no_match_is_empty_success(conn, svc):
     add(conn, "b1", "Naming", "Use Trueline.")
     res = q(svc, "unknown_brand", "anything at all")
-    assert res.results == [] and res.brand_id == "unknown_brand"
+    assert not res.results and res.brand_id == "unknown_brand"
 
 
 def test_top_k_bounds():
@@ -176,7 +176,7 @@ def test_embedding_failure_is_visible_and_not_searchable(conn, svc):
             brand_id="b1", source_type="guideline", title="X", text="Kiwi rule."), S)
     row = conn.execute("SELECT index_status FROM knowledge_chunks").fetchone()
     assert row["index_status"] == "failed"
-    assert q(svc, "b1", "kiwi").results == []
+    assert not q(svc, "b1", "kiwi").results
     # recovery: reindex with a working embedder
     ingest.reindex_stale(conn, EMB, S)
     assert q(svc, "b1", "kiwi").results
@@ -209,13 +209,13 @@ def test_keyword_fallback_is_labelled_keyword(conn):
     finally:
         BrokenEmbedder.tag = "broken"
     assert res.retrieval_method == "keyword" and res.results
-    assert all(r.retrieval.method == "keyword" for r in res.results)
+    assert all(r.score is not None for r in res.results)
 
 
 def test_mixed_model_chunks_not_searched(conn, svc):
     add(conn, "b1", "Naming", "Mango rule.")
     conn.execute("UPDATE knowledge_chunks SET embedding_model='other-model@x|dense|normalized'")
     conn.commit()
-    assert q(svc, "b1", "mango").results == []
+    assert not q(svc, "b1", "mango").results
     assert ingest.reindex_stale(conn, EMB, S)           # rebuilds with current model tag
     assert q(svc, "b1", "mango").results

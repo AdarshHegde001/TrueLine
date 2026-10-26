@@ -3,18 +3,19 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 SourceType = Literal["guideline", "approved_fact"]
 DEFAULT_SOURCE_TYPES: list[str] = ["guideline", "approved_fact"]
 
 
 class KnowledgeSearchRequest(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     brand_id: str = Field(min_length=1)
     query: str = Field(min_length=1)
-    source_types: list[SourceType] = Field(default_factory=lambda: list(DEFAULT_SOURCE_TYPES))
+    source_types: tuple[SourceType, ...] = tuple(DEFAULT_SOURCE_TYPES)
     top_k: int = Field(default=8, ge=1, le=20)
-    filters: Optional[dict[str, Any]] = None  # only {"status": "active"} is accepted
 
     @field_validator("query")
     @classmethod
@@ -25,45 +26,40 @@ class KnowledgeSearchRequest(BaseModel):
 
     @field_validator("source_types")
     @classmethod
-    def _non_empty(cls, v: list[str]) -> list[str]:
+    def _non_empty(cls, v: tuple[str, ...]) -> tuple[str, ...]:
         if not v:
             raise ValueError("source_types must not be empty")
         return v
 
-    @field_validator("filters")
-    @classmethod
-    def _only_active(cls, v: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
-        if v and (set(v) - {"status"} or v.get("status", "active") != "active"):
-            raise ValueError("only filters={'status': 'active'} is supported")
-        return v
 
+class RetrievedChunk(BaseModel):
+    """Mapping-compatible representation of rag.retrieval.models.RetrievedChunk."""
 
-class RetrievalInfo(BaseModel):
-    method: Literal["hybrid", "vector", "keyword"]
+    model_config = ConfigDict(frozen=True)
+
+    brand_id: str
+    source_id: str
+    version_id: str
+    source_type: SourceType
+    title: str
+    version_number: int
+    chunk_id: str
+    chunk_text: str
+    source_text: Optional[str] = None
+    location: dict[str, Any] = Field(default_factory=dict)
+    embedding_model: Optional[str] = None
     rank: int
-    # Retrieval signal only. NOT confidence and NOT proof a source supports a finding.
     score: Optional[float] = None
 
 
-class KnowledgeSearchResult(BaseModel):
-    source_id: str
-    version_id: str
-    brand_id: str
-    source_type: SourceType
-    title: str
-    version: int
-    chunk_id: str
-    chunk_text: str
-    text: str  # authoritative full source text for this version
-    location: dict[str, Any] = Field(default_factory=dict)
-    embedding_model: str
-    retrieval: RetrievalInfo
-
-
 class KnowledgeSearchResponse(BaseModel):
+    """Mapping-compatible representation of the canonical RAG response."""
+
+    model_config = ConfigDict(frozen=True)
+
     brand_id: str
     retrieval_method: Literal["hybrid", "vector", "keyword"]
-    results: list[KnowledgeSearchResult]
+    results: tuple[RetrievedChunk, ...] = ()
 
 
 # ---- ingestion-side models ----
@@ -76,6 +72,7 @@ class SourceCreate(BaseModel):
     document_id: Optional[str] = None
     document_name: Optional[str] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    rule_data: list[dict[str, Any]] = Field(default_factory=list)
     approved: bool = True  # admin confirmation; False => stays pending, not searchable
 
     @field_validator("title", "text")
@@ -94,6 +91,7 @@ class SourceUpdate(BaseModel):
     document_id: Optional[str] = None
     document_name: Optional[str] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    rule_data: Optional[list[dict[str, Any]]] = None
     approved: bool = True
 
 
@@ -108,6 +106,7 @@ class SourceVersionRecord(BaseModel):
     version_id: str
     version: int
     text: str
+    rule_data: list[dict[str, Any]] = Field(default_factory=list)
     metadata: dict[str, Any]
     created_at: str
     updated_at: str

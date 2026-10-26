@@ -10,8 +10,8 @@ from .config import Settings, get_settings
 from .db import connect, vec_literal
 from .embeddings import Embedder
 from .errors import SearchServiceError
-from .models import (KnowledgeSearchRequest, KnowledgeSearchResponse, KnowledgeSearchResult,
-                     RetrievalInfo)
+from .ingest import get_deterministic_rules as _get_deterministic_rules
+from .models import KnowledgeSearchRequest, KnowledgeSearchResponse, RetrievedChunk
 
 RRF_K = 60
 
@@ -96,29 +96,41 @@ class KnowledgeService:
 
         ordered = sorted(fused.values(), key=lambda e: (-e["score"], e["row"]["chunk_id"]))[: req.top_k]
         results = [
-            KnowledgeSearchResult(
+            RetrievedChunk(
                 source_id=e["row"]["source_id"], version_id=e["row"]["version_id"],
                 brand_id=e["row"]["brand_id"], source_type=e["row"]["source_type"],
-                title=e["row"]["title"], version=e["row"]["version_number"],
+                title=e["row"]["title"], version_number=e["row"]["version_number"],
                 chunk_id=e["row"]["chunk_id"], chunk_text=e["row"]["chunk_text"],
-                text=e["row"]["source_text"], location=e["row"]["location"] or {},
-                embedding_model=e["row"]["embedding_model"],
-                retrieval=RetrievalInfo(method=method, rank=i, score=round(e["score"], 6)),
+                source_text=e["row"]["source_text"], location=e["row"]["location"] or {},
+                embedding_model=e["row"]["embedding_model"], rank=i,
+                score=round(e["score"], 6),
             )
             for i, e in enumerate(ordered, 1)
         ]
-        return KnowledgeSearchResponse(brand_id=req.brand_id, retrieval_method=method, results=results)
+        return KnowledgeSearchResponse(
+            brand_id=req.brand_id, retrieval_method=method, results=tuple(results)
+        )
 
 
 # ---- the contract's module-level operation: search_knowledge(request) ----
 _default: KnowledgeService | None = None
 
 
-def search_knowledge(request: KnowledgeSearchRequest) -> KnowledgeSearchResponse:
+def search_knowledge(request: KnowledgeSearchRequest) -> dict:
     """Return approved, active brand knowledge relevant to a focused query.
     Caller (backend) must already have authorised access to request.brand_id."""
     global _default
     if _default is None:
         from .embeddings import BGEM3Embedder
         _default = KnowledgeService(BGEM3Embedder())
-    return _default.search(request)
+    return _default.search(request).model_dump()
+
+
+def get_deterministic_rules(*, brand_id: str, channel: str | None) -> list[dict]:
+    """Load all active structured rules for an already-authorized brand."""
+    settings = get_settings()
+    try:
+        with connect(settings) as conn:
+            return _get_deterministic_rules(conn, brand_id, channel)
+    except psycopg.Error as exc:
+        raise SearchServiceError(f"database/index failure while loading rules: {exc}") from exc
