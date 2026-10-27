@@ -16,10 +16,18 @@ const documentTypeLabels = {
 };
 
 function StatusPill({ status }) {
-  const kind = status === 'ready' || status === 'complete' ? 'good'
-    : status === 'error' ? 'bad' : 'pending';
+  const normalized = String(status || '').toUpperCase();
+  const kind = ['READY', 'COMPLETE', 'PASSED'].includes(normalized) ? 'good'
+    : ['ERROR', 'CHECK_FAILED', 'VIOLATION'].includes(normalized) ? 'bad'
+      : ['UNSUPPORTED', 'UNVERIFIED'].includes(normalized) ? 'pending' : 'pending';
   const label = String(status || 'pending').replaceAll('_', ' ');
   return <span className={`status-pill ${kind}`}><i />{label}</span>;
+}
+
+function MarkdownText({ children, className }) {
+  if (!children) return null;
+  // Raw HTML remains inert; do not add rehype-raw or another unsafe renderer.
+  return <div className={className}><ReactMarkdown remarkPlugins={[remarkGfm]}>{String(children)}</ReactMarkdown></div>;
 }
 
 function App() {
@@ -446,7 +454,7 @@ function App() {
             </div>
 
             {reviewResult && <div className="results-section">
-              <div className="results-heading"><div><div className="eyebrow"><span className="eyebrow-line" /> REVIEW OUTPUT</div><h2>Review results</h2></div><StatusPill status={summaryResult?.status || 'complete'} /></div>
+              <div className="results-heading"><div><div className="eyebrow"><span className="eyebrow-line" /> REVIEW OUTPUT</div><h2>Review results</h2></div><StatusPill status={summaryResult?.classification || summaryResult?.status || 'complete'} /></div>
               {reviewResult.preparedReview?.document?.warnings?.length > 0 && <div className="parse-warning review-warning">{reviewResult.preparedReview.document.warnings.map((warning, index) => <p key={`review-warning-${index}`}>{warning}</p>)}</div>}
               {reviewResult.visualAssets?.length > 0 && <div className="visual-review-notice"><b>{reviewResult.visualAssets.length} image{reviewResult.visualAssets.length === 1 ? '' : 's'} extracted</b><span>{[...new Set(reviewResult.visualAssets.map((item) => item.page))].map((page) => `page ${page}`).join(' · ')} · {reviewResult.logoReview?.notes || 'Visual review pending'}</span></div>}
               <div className="results-grid">
@@ -454,8 +462,8 @@ function App() {
                   {deterministicFindings.length ? <div className="finding-list">{deterministicFindings.map((finding) => <div className="finding" key={finding.finding_id}><div className={`finding-tag ${finding.label}`}>{finding.label.replace('_', ' ')}</div><div><b>{finding.rule_id}</b><p>{finding.explanation}</p>{finding.quote && <blockquote>“{finding.quote}”</blockquote>}<small>Source: {finding.source?.title || finding.source?.source_id} · {finding.source?.version_id}</small></div></div>)}</div> : <div className="no-findings"><span>✓</span><div><b>No deterministic findings</b><p>{reviewResult.preparedReview.deterministic.checks_run?.length ? 'Configured checks passed for the submitted text.' : 'No structured rules were configured for this brand and channel.'}</p></div></div>}
                   <div className="result-meta">Checks run: {reviewResult.preparedReview.deterministic.checks_run?.join(', ') || 'none'} · Retrieval: {reviewResult.preparedReview.retrieval_status}</div>
                 </div>
-                <div className="panel result-panel ai-panel summary-panel"><div className="result-panel-heading"><div><span className="result-index ai-index">✦</span><h3>Agent summary</h3></div><span className="result-count">{summaryResult?.status?.replaceAll('_', ' ').toUpperCase() || 'PENDING'}</span></div>
-                  {summaryResult?.summary ? <div className="markdown-summary"><ReactMarkdown remarkPlugins={[remarkGfm]}>{summaryResult.summary}</ReactMarkdown></div> : <div className="ai-empty"><div className="ai-empty-icon">✦</div><b>{summaryResult?.status === 'error' ? 'Summary unavailable' : 'No summary returned'}</b><p>The deterministic results and specialist agent outputs are shown below.</p></div>}
+                <div className="panel result-panel ai-panel summary-panel"><div className="result-panel-heading"><div><span className="result-index ai-index">✦</span><h3>Agent summary</h3></div><span className="result-count">{(summaryResult?.classification || summaryResult?.status)?.replaceAll('_', ' ').toUpperCase() || 'PENDING'}</span></div>
+                  {summaryResult?.summary ? <MarkdownText className="markdown-summary">{summaryResult.summary}</MarkdownText> : <div className="ai-empty"><div className="ai-empty-icon">✦</div><b>{summaryResult?.classification === 'CHECK_FAILED' || summaryResult?.status === 'error' ? 'Summary unavailable' : 'No summary returned'}</b><p>The deterministic results and specialist agent outputs are shown below.</p></div>}
                   {summaryResult?.key_findings?.length > 0 && <div className="summary-key-findings"><b>Key findings</b><ul>{summaryResult.key_findings.map((finding, index) => <li key={`${index}-${finding}`}>{finding}</li>)}</ul></div>}
                 </div>
               </div>
@@ -466,21 +474,32 @@ function App() {
                   const findings = agent?.findings || [];
                   const cited = findings.flatMap((finding) => (finding.citations || []).map((citation) => ({ citation, finding })));
                   return <div className="panel result-panel specialist-panel" key={agentName}>
-                    <div className="result-panel-heading"><div><span className="result-index">{agentName === 'tone' ? 'B' : 'C'}</span><h3>{agentName === 'tone' ? 'Tone agent' : 'Claims agent'}</h3></div><span className="result-count">{agent?.status?.replaceAll('_', ' ').toUpperCase() || 'PENDING'}</span></div>
-                    {findings.length ? <div className="agent-finding-list">{findings.map((finding, index) => <article className="agent-finding" key={`${agentName}-${index}`}><span className={`finding-tag ${finding.status || finding.severity || 'unverified'}`}>{(finding.status || finding.severity || 'finding').replaceAll('_', ' ')}</span><b>{finding.claim || finding.assessment || 'Review finding'}</b><p>{finding.explanation || finding.assessment}</p>{finding.document_quote && <blockquote>“{finding.document_quote}”</blockquote>}</article>)}</div> : <div className="agent-empty"><b>{agent?.status === 'error' ? 'Agent could not complete' : 'No specialist findings'}</b><p>{agent?.notes || (agent?.status === 'insufficient_evidence' ? 'The index did not return enough relevant approved evidence.' : 'This agent did not flag a finding.')}</p></div>}
+                    <div className="result-panel-heading"><div><span className="result-index">{agentName === 'tone' ? 'B' : 'C'}</span><h3>{agentName === 'tone' ? 'Tone agent' : 'Claims agent'}</h3></div><span className="result-count">{(agent?.classification || agent?.status)?.replaceAll('_', ' ').toUpperCase() || 'PENDING'}</span></div>
+                    {findings.length ? <div className="agent-finding-list">{findings.map((finding, index) => {
+                      const classification = finding.classification || finding.status || finding.severity || 'UNVERIFIED';
+                      return (
+                        <article className="agent-finding" key={`${agentName}-${index}`}>
+                          <span className={`finding-tag ${String(classification).toLowerCase()}`}>{String(classification).replaceAll('_', ' ')}</span>
+                          <MarkdownText className="agent-finding-title">{finding.claim || finding.assessment || 'Review finding'}</MarkdownText>
+                          <MarkdownText className="agent-finding-copy">{finding.explanation || finding.assessment}</MarkdownText>
+                          {finding.document_quote && <blockquote>“{finding.document_quote}”</blockquote>}
+                        </article>
+                      );
+                    })}</div> : <div className="agent-empty"><b>{agent?.classification === 'CHECK_FAILED' || agent?.status === 'error' ? 'Agent could not complete' : 'No specialist findings'}</b><p>{agent?.notes || (agent?.status === 'insufficient_evidence' ? 'The index did not return enough relevant approved evidence.' : 'This agent did not flag a finding.')}</p></div>}
                     {cited.length > 0 && <div className="citation-list"><h4>Evidence cited by this agent</h4>{cited.map(({ citation }, index) => {
                       const source = evidence.flatMap((bundle) => bundle.sources || []).find((candidate) => candidate.source_id === citation.source_id && candidate.version_id === citation.version_id && candidate.chunk_id === citation.chunk_id);
-                      return <article className="citation-card" key={`${citation.source_id}-${citation.chunk_id}-${index}`}><div className="citation-heading"><b>{source?.title || citation.source_id}</b><span>v{source?.version_number ?? citation.version_id}</span></div><small>{source?.document_type?.replaceAll('_', ' ') || 'approved source'} · chunk {citation.chunk_id}</small><blockquote>“{citation.quote}”</blockquote>{source?.location && <small>Location: {JSON.stringify(source.location)}</small>}</article>;
+                      const pages = citation.pages?.length ? citation.pages : citation.page ? [citation.page] : source?.location?.pages || (source?.location?.page ? [source.location.page] : []);
+                      return <article className="citation-card" key={`${citation.source_id}-${citation.chunk_id}-${index}`}><div className="citation-heading"><b>{citation.source_title || source?.title || citation.source_id}</b><span>v{citation.version_number ?? source?.version_number ?? citation.version_id}</span></div><small>{source?.document_type?.replaceAll('_', ' ') || 'approved source'} · chunk {citation.chunk_id}{pages.length ? ` · page${pages.length > 1 ? 's' : ''} ${pages.join(', ')}` : ''}</small><blockquote>“{citation.quote}”</blockquote></article>;
                     })}</div>}
                   </div>;
                 })}
                 <div className="panel result-panel specialist-panel logo-review-panel">
-                  <div className="result-panel-heading"><div><span className="result-index">D</span><h3>Logo review</h3></div><span className="result-count">{String(logoAgentResult?.status || reviewResult.logoReview?.status || 'pending').replaceAll('_', ' ').toUpperCase()}</span></div>
+                  <div className="result-panel-heading"><div><span className="result-index">D</span><h3>Logo review</h3></div><span className="result-count">{String(logoAgentResult?.classification || logoAgentResult?.status || reviewResult.logoReview?.status || 'pending').replaceAll('_', ' ').toUpperCase()}</span></div>
                   {logoAgentResult?.findings?.length ? <div className="agent-finding-list">{logoAgentResult.findings.map((finding, index) => {
                     const reference = reviewResult.logoReferences?.find((item) => item.logo_id === finding.reference_logo_id);
                     return <article className="agent-finding" key={`${finding.review_image_id}-${index}`}>
-                      <span className={`finding-tag ${finding.comparison === 'differences_observed' ? 'medium' : finding.comparison === 'matches_reference' ? 'supported' : 'unverified'}`}>{finding.comparison?.replaceAll('_', ' ')}</span>
-                      <b>Logo candidate on page {finding.page}</b><p>{finding.observation}</p>
+                      <span className={`finding-tag ${String(finding.classification || 'UNVERIFIED').toLowerCase()}`}>{String(finding.classification || 'UNVERIFIED').replaceAll('_', ' ')}</span>
+                      <b>Logo candidate on page {finding.page}</b><p>{finding.observation}</p><small>Visual comparison: {finding.comparison?.replaceAll('_', ' ')}</small>
                       {reference && <small>Compared with: {reference.title} · {reference.original_name}</small>}
                     </article>;
                   })}</div> : <div className="agent-empty"><b>{logoAgentResult?.status === 'error' ? 'Logo agent could not complete' : logoAgentResult?.status === 'insufficient_evidence' ? 'Approved logo needed' : 'No likely logo matches found'}</b><p>{logoAgentResult?.notes || reviewResult.logoReview?.notes || 'Upload an approved logo reference to enable logo comparison.'}</p></div>}

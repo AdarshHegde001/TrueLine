@@ -25,15 +25,22 @@ class Citation(BaseModel):
     source_id: str
     version_id: str
     chunk_id: str
-    quote: str
+    quote: str = Field(min_length=1)
+    source_title: str | None = None
+    version_number: int | None = None
+    page: int | None = None
+    pages: list[int] = Field(default_factory=list)
+    location: dict[str, Any] = Field(default_factory=dict)
 
 
 class ToneFinding(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    document_quote: str
+    document_quote: str = Field(min_length=1)
     assessment: str = Field(description="A concise description of the tone issue")
-    severity: str = Field(description="low, medium, or high")
+    severity: Literal["low", "medium", "high"] = "medium"
+    classification: Literal["VIOLATION", "UNSUPPORTED", "UNVERIFIED", "PASSED", "CHECK_FAILED"] = "UNVERIFIED"
+    rule_quote: str | None = Field(default=None, description="Exact source text stating the explicit rule, required for a violation")
     citations: list[Citation] = Field(default_factory=list)
 
 
@@ -41,6 +48,7 @@ class ToneResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     status: Literal["complete", "insufficient_evidence", "error"]
+    classification: Literal["VIOLATION", "UNSUPPORTED", "UNVERIFIED", "PASSED", "CHECK_FAILED"] = "UNVERIFIED"
     findings: list[ToneFinding] = Field(default_factory=list)
     notes: str = ""
 
@@ -48,10 +56,12 @@ class ToneResult(BaseModel):
 class ClaimFinding(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    document_quote: str
-    claim: str
-    status: str = Field(description="supported, contradicted, or unverified")
+    document_quote: str = Field(min_length=1)
+    claim: str = Field(min_length=1)
+    status: Literal["supported", "contradicted", "unverified", "unsupported"] = Field(description="supported, contradicted, unverified, or unsupported")
     explanation: str
+    severity: Literal["low", "medium", "high"] = "medium"
+    classification: Literal["VIOLATION", "UNSUPPORTED", "UNVERIFIED", "PASSED", "CHECK_FAILED"] = "UNVERIFIED"
     citations: list[Citation] = Field(default_factory=list)
 
 
@@ -59,6 +69,7 @@ class ClaimsResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     status: Literal["complete", "insufficient_evidence", "error"]
+    classification: Literal["VIOLATION", "UNSUPPORTED", "UNVERIFIED", "PASSED", "CHECK_FAILED"] = "UNVERIFIED"
     findings: list[ClaimFinding] = Field(default_factory=list)
     notes: str = ""
 
@@ -67,8 +78,10 @@ class SummaryResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     status: Literal["complete", "insufficient_evidence", "error"]
-    summary: str
+    classification: Literal["VIOLATION", "UNSUPPORTED", "UNVERIFIED", "PASSED", "CHECK_FAILED"] = "UNVERIFIED"
+    summary: str = ""
     key_findings: list[str] = Field(default_factory=list)
+    selected_finding_ids: list[str] = Field(default_factory=list)
     human_review_required: bool = True
 
 
@@ -79,7 +92,9 @@ class LogoFinding(BaseModel):
     page: int = Field(ge=1)
     detection: Literal["logo", "uncertain"]
     reference_logo_id: str | None = None
+    reference_logo_title: str | None = None
     comparison: Literal["matches_reference", "differences_observed", "no_reference", "uncertain"]
+    classification: Literal["VIOLATION", "UNSUPPORTED", "UNVERIFIED", "PASSED", "CHECK_FAILED"] = "UNVERIFIED"
     observation: str
 
 
@@ -87,6 +102,7 @@ class LogoResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     status: Literal["complete", "insufficient_evidence", "error"]
+    classification: Literal["VIOLATION", "UNSUPPORTED", "UNVERIFIED", "PASSED", "CHECK_FAILED"] = "UNVERIFIED"
     findings: list[LogoFinding] = Field(default_factory=list)
     notes: str = ""
 
@@ -247,25 +263,354 @@ def _select_logo_inputs(
     return selected_candidates, selected_references, skipped
 
 
-def _validate_citations(result: dict[str, Any], evidence: list[dict[str, Any]], *, approved_facts_only: bool = False) -> dict[str, Any]:
-    allowed: dict[tuple[str, str, str], tuple[str, str]] = {}
+_CLASSIFICATIONS = {"VIOLATION", "UNSUPPORTED", "UNVERIFIED", "PASSED", "CHECK_FAILED"}
+
+
+def _validate_citations(
+    result: dict[str, Any],
+    evidence: list[dict[str, Any]],
+    *,
+    brand_id: str,
+    approved_facts_only: bool = False,
+    require_topical_overlap: bool = False,
+) -> dict[str, Any]:
+    """Keep citations only when every identity and quoted excerpt resolves exactly.
+
+    Source display metadata is copied from the retrieved chunk; the model cannot
+    supply or alter titles, versions, or page numbers.
+    """
+    allowed: dict[tuple[str, str, str], dict[str, Any]] = {}
     for bundle in evidence:
         for source in bundle.get("sources", []):
+            if source.get("brand_id") != brand_id:
+                continue
             if approved_facts_only and source.get("source_type") != "approved_fact":
                 continue
-            key = (source["source_id"], source["version_id"], source["chunk_id"])
-            allowed[key] = (source.get("chunk_text", ""), source.get("brand_id", ""))
+            key = (source.get("source_id"), source.get("version_id"), source.get("chunk_id"))
+            if all(key):
+                allowed[key] = source
     for finding in result.get("findings", []):
-        finding["citations"] = [
-            citation for citation in finding.get("citations", [])
-            if (citation.get("source_id"), citation.get("version_id"), citation.get("chunk_id")) in allowed
-            and citation.get("quote", "")
-            and citation["quote"] in allowed[(citation["source_id"], citation["version_id"], citation["chunk_id"])][0]
-            and allowed[(citation["source_id"], citation["version_id"], citation["chunk_id"])][1]
-        ]
-        if approved_facts_only and finding.get("status") in {"supported", "contradicted"} and not finding["citations"]:
-            finding["status"] = "unverified"
+        validated = []
+        for citation in finding.get("citations", []):
+            key = (citation.get("source_id"), citation.get("version_id"), citation.get("chunk_id"))
+            source = allowed.get(key)
+            quote = citation.get("quote", "")
+            if not source or not quote or quote not in source.get("chunk_text", ""):
+                continue
+            if require_topical_overlap and not _has_topical_overlap(
+                quote, f"{finding.get('claim', '')} {finding.get('document_quote', '')}"
+            ):
+                continue
+            location = source.get("location") or {}
+            pages = location.get("pages") or ([location["page"]] if location.get("page") else [])
+            validated.append({
+                **citation,
+                "source_title": source.get("title"),
+                "version_number": source.get("version_number"),
+                "page": pages[0] if len(pages) == 1 else None,
+                "pages": pages,
+                "location": location,
+            })
+        finding["citations"] = _dedupe_citations(validated)
     return result
+
+
+def _dedupe_citations(citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[tuple[str, str, str, str]] = set()
+    unique = []
+    for citation in citations:
+        key = (citation.get("source_id", ""), citation.get("version_id", ""),
+               citation.get("chunk_id", ""), citation.get("quote", ""))
+        if key not in seen:
+            seen.add(key)
+            unique.append(citation)
+    return unique
+
+
+def _content_tokens(text: str) -> set[str]:
+    stop_words = {
+        "the", "and", "for", "with", "that", "this", "from", "are", "was", "were",
+        "has", "have", "had", "will", "would", "could", "should", "not", "but", "our",
+        "their", "they", "them", "you", "your", "its", "into", "than", "then", "use",
+        "used", "using", "does", "did", "can", "may", "all", "any", "when", "where",
+    }
+    return {token for token in re.findall(r"[\w%]+", text.casefold())
+            if token not in stop_words and (len(token) > 2 or token.isdigit())}
+
+
+def _has_topical_overlap(evidence_quote: str, finding_text: str) -> bool:
+    finding_tokens = _content_tokens(finding_text)
+    evidence_tokens = _content_tokens(evidence_quote)
+    # If lexical comparison is not possible (e.g. a very short phrase), defer to
+    # the model's semantic judgment; otherwise reject citations about another topic.
+    overlap = finding_tokens & evidence_tokens
+    return not finding_tokens or not evidence_tokens or len(overlap) >= min(2, len(finding_tokens))
+
+
+def _fallback_classification(has_evidence: bool) -> str:
+    return "UNVERIFIED" if has_evidence else "UNSUPPORTED"
+
+
+def _normalize_tone_result(
+    result: dict[str, Any], evidence: list[dict[str, Any]], *, brand_id: str, document_text: str,
+) -> dict[str, Any]:
+    if result.get("status") == "error":
+        result["findings"] = []
+        result["classification"] = "CHECK_FAILED"
+        return result
+    result = _validate_citations(result, evidence, brand_id=brand_id)
+    for finding in result.get("findings", []):
+        if finding.get("document_quote") not in document_text:
+            finding["citations"] = []
+            finding["classification"] = "UNVERIFIED"
+            continue
+        classification = finding.get("classification", "UNVERIFIED")
+        if classification not in _CLASSIFICATIONS:
+            classification = "UNVERIFIED"
+        if classification == "UNSUPPORTED":
+            finding["citations"] = []
+            classification = "UNVERIFIED"
+        if classification == "PASSED" and not finding["citations"]:
+            classification = "UNVERIFIED"
+        if classification == "VIOLATION":
+            rule_quote = finding.get("rule_quote") or ""
+            supported_by_explicit_rule = bool(rule_quote) and any(
+                rule_quote in citation.get("quote", "") for citation in finding["citations"]
+            )
+            if not finding["citations"] or not supported_by_explicit_rule:
+                classification = "UNVERIFIED"
+        finding["classification"] = classification
+    result["classification"] = _aggregate_classification(
+        [item.get("classification", "UNVERIFIED") for item in result.get("findings", [])],
+        no_findings="PASSED" if result.get("status") == "complete" and evidence else "UNVERIFIED",
+    )
+    return result
+
+
+def _normalize_claims_result(
+    result: dict[str, Any], evidence: list[dict[str, Any]], *, brand_id: str, document_text: str,
+) -> dict[str, Any]:
+    if result.get("status") == "error":
+        result["findings"] = []
+        result["classification"] = "CHECK_FAILED"
+        return result
+    result = _validate_citations(
+        result, evidence, brand_id=brand_id, approved_facts_only=True,
+        require_topical_overlap=True,
+    )
+    approved_sources = [
+        source for bundle in evidence for source in bundle.get("sources", [])
+        if source.get("brand_id") == brand_id and source.get("source_type") == "approved_fact"
+    ]
+    for finding in result.get("findings", []):
+        if finding.get("document_quote") not in document_text:
+            finding["citations"] = []
+            finding["classification"] = "UNVERIFIED"
+            finding["status"] = "unverified"
+            continue
+        model_status = finding.get("status")
+        if model_status == "unsupported":
+            classification = "UNSUPPORTED"
+        elif model_status == "unverified":
+            classification = "UNVERIFIED"
+        elif finding["citations"]:
+            classification = "VIOLATION" if model_status == "contradicted" else "PASSED"
+        else:
+            classification = _fallback_classification(bool(approved_sources))
+        finding["classification"] = classification
+        if classification == "UNSUPPORTED":
+            finding["citations"] = []
+        # Keep the established status values meaningful to existing API clients.
+        finding["status"] = {
+            "VIOLATION": "contradicted", "PASSED": "supported",
+            "UNSUPPORTED": "unsupported", "UNVERIFIED": "unverified",
+        }[classification]
+    result["classification"] = _aggregate_classification(
+        [item.get("classification", "UNVERIFIED") for item in result.get("findings", [])],
+        no_findings=("UNSUPPORTED" if result.get("status") == "insufficient_evidence" and not approved_sources
+                     else "UNVERIFIED" if result.get("status") == "insufficient_evidence"
+                     else "PASSED" if result.get("status") == "complete" and approved_sources
+                     else "UNVERIFIED"),
+    )
+    return result
+
+
+def _aggregate_classification(classifications: list[str], *, no_findings: str) -> str:
+    priority = ("CHECK_FAILED", "VIOLATION", "UNSUPPORTED", "UNVERIFIED", "PASSED")
+    if not classifications:
+        return no_findings
+    return next((item for item in priority if item in classifications), "UNVERIFIED")
+
+
+def _overall_classification(
+    prepared: PreparedReview, tone: dict[str, Any], claims: dict[str, Any],
+    logo: dict[str, Any], *, summary_failed: bool = False,
+) -> str:
+    """Aggregate every completed review check without replacing individual results."""
+    if summary_failed or prepared.retrieval_status == "failed":
+        return "CHECK_FAILED"
+    classifications = [
+        str(getattr(finding.label, "value", finding.label)).upper()
+        for finding in prepared.deterministic.findings
+    ]
+    classifications.extend(
+        result.get("classification", "UNVERIFIED")
+        for result in (tone, claims, logo)
+    )
+    return _aggregate_classification(classifications, no_findings="UNVERIFIED")
+
+
+def _validate_logo_findings(
+    output: dict[str, Any], candidates: list[dict[str, Any]], references: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Bind logo model output to supplied image IDs and their actual pages."""
+    if output.get("status") == "error":
+        output["findings"] = []
+        output["classification"] = "CHECK_FAILED"
+        return output
+    candidates_by_id = {item["image_id"]: item for item in candidates}
+    references_by_id = {item["logo_id"]: item for item in references}
+    validated = []
+    for finding in output.get("findings", []):
+        candidate = candidates_by_id.get(finding.get("review_image_id"))
+        if candidate is None:
+            continue
+        reference = references_by_id.get(finding.get("reference_logo_id"))
+        finding["page"] = candidate["page"]
+        if reference is None:
+            finding["reference_logo_id"] = None
+            finding["reference_logo_title"] = None
+            finding["comparison"] = "no_reference"
+        else:
+            finding["reference_logo_title"] = reference.get("title")
+        finding["classification"] = (
+            "PASSED" if finding["comparison"] == "matches_reference" and reference
+            else "UNVERIFIED"
+        )
+        validated.append(finding)
+    output["findings"] = validated
+    output["classification"] = (
+        "CHECK_FAILED" if output.get("status") == "error"
+        else _aggregate_classification(
+            [finding["classification"] for finding in validated], no_findings="UNVERIFIED",
+        )
+    )
+    return output
+
+
+def _summary_candidates(
+    prepared: PreparedReview, tone: dict[str, Any], claims: dict[str, Any],
+    logo: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Build unique, source-backed summary units without collapsing distinct checks."""
+    candidates: list[dict[str, Any]] = []
+    for finding in prepared.deterministic.findings:
+        item = finding.model_dump(mode="json")
+        classification = item["label"].upper()
+        candidates.append({
+            "id": f"det:{item['finding_id']}", "category": "Deterministic",
+            "classification": classification, "severity": item.get("severity") or "medium",
+            "subject": item.get("rule_id", "Rule check"), "explanation": item["explanation"],
+            "document_quote": item.get("quote"), "rule_id": item.get("rule_id"),
+            "citations": ([{
+                "source_id": item["source"]["source_id"], "version_id": item["source"]["version_id"],
+                "source_title": item["source"].get("title"), "quote": item["source"].get("excerpt", ""),
+                "page": None, "pages": [],
+            }] if item.get("label") == "violation" else []),
+        })
+    for category, result in (("Tone", tone), ("Claims", claims)):
+        for index, finding in enumerate(result.get("findings", [])):
+            classification = finding.get("classification", "UNVERIFIED")
+            candidates.append({
+                "id": f"{category.lower()}:{index}", "category": category,
+                "classification": classification, "severity": finding.get("severity", "medium"),
+                "subject": finding.get("claim") or finding.get("assessment") or "Review finding",
+                "explanation": finding.get("explanation") or finding.get("assessment") or "",
+                "document_quote": finding.get("document_quote"), "rule_id": finding.get("rule_id"),
+                "citations": finding.get("citations", []),
+            })
+    for index, finding in enumerate((logo or {}).get("findings", [])):
+        candidates.append({
+            "id": f"logo:{index}", "category": "Logo comparison",
+            "classification": finding.get("classification", "UNVERIFIED"),
+            "severity": "medium",
+            "subject": f"Logo image {finding.get('review_image_id', 'unknown')} on page {finding.get('page', 'unknown')}",
+            "explanation": finding.get("observation", ""),
+            "document_quote": None, "rule_id": None, "citations": [],
+            "visual_reference": {
+                "logo_id": finding.get("reference_logo_id"),
+                "title": finding.get("reference_logo_title"),
+            } if finding.get("reference_logo_id") else None,
+        })
+
+    # Only collapse exact duplicates within the same check category. Distinct rule
+    # IDs, claims, agent categories, and excerpts remain separate even on one sentence.
+    unique: list[dict[str, Any]] = []
+    by_key: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
+    for item in candidates:
+        if item["classification"] == "PASSED":
+            continue
+        key = (
+            item["category"], item["classification"],
+            " ".join((item.get("document_quote") or "").casefold().split()),
+            " ".join((item.get("subject") or "").casefold().split()),
+            item.get("rule_id") or "",
+        )
+        existing = by_key.get(key)
+        if existing:
+            existing["citations"] = _dedupe_citations(existing["citations"] + item["citations"])
+            continue
+        normalized = {**item, "citations": _dedupe_citations(item["citations"])}
+        by_key[key] = normalized
+        unique.append(normalized)
+    unique.sort(key=lambda item: (
+        {"VIOLATION": 0, "UNSUPPORTED": 1, "UNVERIFIED": 2}.get(item["classification"], 3),
+        {"high": 0, "medium": 1, "low": 2}.get(item["severity"], 1),
+        item["category"], item["id"],
+    ))
+    return unique
+
+
+def _render_summary(
+    candidates: list[dict[str, Any]], selected_ids: list[str] | None = None,
+    limitations: list[str] | None = None,
+) -> tuple[str, list[str]]:
+    # The model may prioritize but cannot omit a finding or add a claim.
+    selected_order = {item: index for index, item in enumerate(selected_ids or [])}
+    chosen = sorted(candidates, key=lambda item: (
+        {"VIOLATION": 0, "UNSUPPORTED": 1, "UNVERIFIED": 2}.get(item["classification"], 3),
+        {"high": 0, "medium": 1, "low": 2}.get(item["severity"], 1),
+        selected_order.get(item["id"], len(selected_order)), item["category"], item["id"],
+    ))
+    if not chosen:
+        lines = ["No unique, evidence-backed issues were identified in the completed checks."]
+    else:
+        lines = ["## Unique findings"]
+    key_findings: list[str] = []
+    for item in chosen:
+        title = f"{item['category']} · {item['classification']} · {item['severity']} severity"
+        subject = item["subject"].replace("\n", " ").strip()
+        explanation = item["explanation"].replace("\n", " ").strip()
+        quote = item.get("document_quote")
+        lines.append(f"### {title}\n- **{subject}** — {explanation}")
+        if quote:
+            lines.append(f"  - Draft excerpt: “{quote}”")
+        for citation in item.get("citations", []):
+            source_title = citation.get("source_title") or citation.get("source_id") or "Approved source"
+            version = citation.get("version_number")
+            version_label = f"v{version}" if version is not None else citation.get("version_id", "version unavailable")
+            page = citation.get("pages") or ([citation["page"]] if citation.get("page") else [])
+            page_label = f", page{'s' if len(page) > 1 else ''} {', '.join(map(str, page))}" if page else ""
+            excerpt = citation.get("quote") or ""
+            lines.append(f"  - Evidence: “{excerpt}” — {source_title}, {version_label}{page_label}.")
+        visual_reference = item.get("visual_reference")
+        if visual_reference:
+            reference_label = visual_reference.get("title") or visual_reference.get("logo_id")
+            lines.append(f"  - Visual comparison reference: {reference_label}.")
+        key_findings.append(f"{title}: {subject}")
+    if limitations:
+        lines.extend(["## Check limitations", *[f"- {item}" for item in limitations]])
+    return "\n\n".join(lines), key_findings
 
 
 def run_agentic_review(
@@ -286,14 +631,16 @@ def run_agentic_review(
         try:
             output = _json_result(
                 _chat("tone"), ToneResult,
-                SYSTEM_INSTRUCTION + " You are the tone judge. Compare only with tone/brand voice evidence. Cite exact retrieved source quotes. Do not invent rules. If no relevant guidance exists, return insufficient_evidence and no findings.",
+                SYSTEM_INSTRUCTION + " You are the tone judge. Compare only against explicit tone/brand rules in the retrieved evidence. Use VIOLATION only when the submitted wording directly conflicts with a specific explicit rule; include rule_quote as an exact substring of the cited source quote. Use PASSED only for a specific check that the evidence confirms. Use UNVERIFIED when relevant evidence is inconclusive, and UNSUPPORTED when required evidence is absent. Never infer a rule from a general impression. Every VIOLATION requires an exact relevant citation; otherwise downgrade it. If the check cannot run, use CHECK_FAILED.",
                 {"review_context": prepared.ai_context.model_dump(mode="json"), "focused_evidence": evidence_json},
             )
-            output = _validate_citations(output, evidence_json)
-            output["findings"] = [finding for finding in output["findings"] if finding["citations"]]
+            output = _normalize_tone_result(
+                output, evidence_json, brand_id=prepared.brand_id,
+                document_text=prepared.document.text,
+            )
             return {"tone_evidence": evidence_json, "tone_result": output}
         except Exception as exc:
-            return {"tone_evidence": evidence_json, "tone_result": {"status": "error", "findings": [], "notes": f"Tone model step failed ({type(exc).__name__})."}}
+            return {"tone_evidence": evidence_json, "tone_result": {"status": "error", "classification": "CHECK_FAILED", "findings": [], "notes": f"Tone model step failed ({type(exc).__name__})."}}
 
     def claims_node(state: ReviewState) -> dict[str, Any]:
         evidence = _retrieve(prepared, retriever, ("approved_claims", "product_facts", "brand_guidelines", "legal_compliance"))
@@ -301,22 +648,25 @@ def run_agentic_review(
         try:
             output = _json_result(
                 _chat("claims"), ClaimsResult,
-                SYSTEM_INSTRUCTION + " You are the claims verifier. Extract checkable claims and compare them with approved facts. No matching evidence means unverified, not false. Supported or contradicted statuses require an approved_fact citation. Cite exact retrieved source quotes.",
+                SYSTEM_INSTRUCTION + " You are the claims verifier. Extract checkable claims and compare them only with approved facts. Classify a claim as contradicted only when retrieved approved evidence directly conflicts; this maps to VIOLATION and requires an exact, relevant approved_fact citation. Use supported only when approved evidence supports it (maps to PASSED). Use unsupported when required approved evidence is absent, and unverified when available evidence is inconclusive. Never infer falsehood from missing evidence. A failed check is CHECK_FAILED.",
                 {"review_context": prepared.ai_context.model_dump(mode="json"), "focused_evidence": evidence_json, "tone_agent": state.get("tone_result", {})},
             )
-            return {"claims_evidence": evidence_json, "claims_result": _validate_citations(output, evidence_json, approved_facts_only=True)}
+            return {"claims_evidence": evidence_json, "claims_result": _normalize_claims_result(
+                output, evidence_json, brand_id=prepared.brand_id,
+                document_text=prepared.document.text,
+            )}
         except Exception as exc:
-            return {"claims_evidence": evidence_json, "claims_result": {"status": "error", "findings": [], "notes": f"Claims model step failed ({type(exc).__name__})."}}
+            return {"claims_evidence": evidence_json, "claims_result": {"status": "error", "classification": "CHECK_FAILED", "findings": [], "notes": f"Claims model step failed ({type(exc).__name__})."}}
 
     def logo_node(_state: ReviewState) -> dict[str, Any]:
         if not approved_logos:
             return {"logo_result": {
-                "status": "insufficient_evidence", "findings": [],
+                "status": "insufficient_evidence", "classification": "UNSUPPORTED", "findings": [],
                 "notes": "Upload an approved logo reference to enable logo comparison.",
             }}
         if not logo_candidates:
             return {"logo_result": {
-                "status": "complete", "findings": [],
+                "status": "complete", "classification": "PASSED", "findings": [],
                 "notes": "Local screening found no review images likely to match the approved logo references.",
             }}
 
@@ -325,7 +675,7 @@ def run_agentic_review(
         )
         if not selected_candidates or not selected_references:
             return {"logo_result": {
-                "status": "insufficient_evidence", "findings": [],
+                "status": "insufficient_evidence", "classification": "UNVERIFIED", "findings": [],
                 "notes": "Logo assets exceeded the visual review size limit; use smaller reference images or a lower-resolution review document.",
             }}
 
@@ -361,44 +711,69 @@ def run_agentic_review(
                 payload,
                 images=visual_inputs,
             )
-            candidate_ids = {item["image_id"] for item in selected_candidates}
-            reference_ids = {item["logo_id"] for item in selected_references}
-            validated = []
-            for finding in output.get("findings", []):
-                if finding.get("review_image_id") not in candidate_ids:
-                    continue
-                if finding.get("reference_logo_id") not in reference_ids:
-                    finding["reference_logo_id"] = None
-                    finding["comparison"] = "no_reference"
-                validated.append(finding)
-            output["findings"] = validated
+            output = _validate_logo_findings(output, selected_candidates, selected_references)
             if skipped_count:
                 output["notes"] = (output.get("notes", "") + f" {skipped_count} logo asset(s) were omitted due to image size limits.").strip()
             return {"logo_result": output}
         except Exception as exc:
             return {"logo_result": {
-                "status": "error", "findings": [],
+                "status": "error", "classification": "CHECK_FAILED", "findings": [],
                 "notes": f"Logo review could not complete ({type(exc).__name__}).",
             }}
 
     def summary_node(state: ReviewState) -> dict[str, Any]:
+        tone_result = state.get("tone_result", {})
+        claims_result = state.get("claims_result", {})
+        logo_result = state.get("logo_result", {})
+        candidates = _summary_candidates(prepared, tone_result, claims_result, logo_result)
+        limitations = []
+        if prepared.retrieval_status == "failed":
+            limitations.append("Source retrieval: CHECK_FAILED; evidence-dependent findings may be incomplete.")
+        for label, agent_result in (("Tone", tone_result), ("Claims", claims_result), ("Logo comparison", logo_result)):
+            classification = agent_result.get("classification", "UNVERIFIED")
+            if classification == "CHECK_FAILED":
+                limitations.append(f"{label} check: CHECK_FAILED.")
+            elif classification == "UNSUPPORTED":
+                limitations.append(f"{label} check: required evidence is unavailable (UNSUPPORTED).")
+            elif classification == "UNVERIFIED":
+                limitations.append(f"{label} check: available evidence did not resolve the check (UNVERIFIED).")
         payload = {
             "review_context": prepared.ai_context.model_dump(mode="json"),
             "tone_evidence": state.get("tone_evidence", []),
             "claims_evidence": state.get("claims_evidence", []),
-            "tone_agent": state.get("tone_result", {}),
-            "claims_agent": state.get("claims_result", {}),
-            "logo_agent": state.get("logo_result", {}),
+            "tone_agent": tone_result,
+            "claims_agent": claims_result,
+            "logo_agent": logo_result,
+            "unique_findings_available_for_summary": candidates,
         }
         try:
             output = _json_result(
                 _chat("summary"), SummaryResult,
-                SYSTEM_INSTRUCTION + " You are the final summarizer. Write the summary field as well-formed GitHub-flavored Markdown with a short overall assessment, clear issue headings, and concise bullets. Cite evidence inline by source title and version, and preserve the evidence references exactly; never elevate uncertain results. Summarize all deterministic findings, retrieved evidence, tone, claims, and logo review results. Logo observations are not compliance decisions. Keep a human in control.",
+                SYSTEM_INSTRUCTION + " You are the final summarizer. Do not write new prose claims. Select only the IDs of the most important unique findings from unique_findings_available_for_summary in selected_finding_ids; keep every VIOLATION selected. Do not alter classification, severity, excerpts, or citations. Logo observations are not compliance decisions. The application will render the final summary from validated structured findings.",
                 payload,
             )
-            return {"summary_result": output}
+            selected_ids = output.get("selected_finding_ids", [])
+            selected_ids = [item for item in selected_ids if item in {candidate["id"] for candidate in candidates}]
+            summary, key_findings = _render_summary(candidates, selected_ids, limitations)
+            summary_classification = _overall_classification(
+                prepared, tone_result, claims_result, logo_result,
+                summary_failed=output.get("status") == "error",
+            )
+            return {"summary_result": {
+                "status": output.get("status", "complete"),
+                "classification": summary_classification,
+                "summary": summary,
+                "key_findings": key_findings,
+                "human_review_required": True,
+            }}
         except Exception as exc:
-            return {"summary_result": {"status": "error", "summary": "The summary model step could not complete.", "key_findings": [], "human_review_required": True, "error_type": type(exc).__name__}}
+            summary, key_findings = _render_summary(candidates, limitations=limitations)
+            return {"summary_result": {
+                "status": "error", "classification": "CHECK_FAILED", "summary": summary,
+                "key_findings": key_findings, "human_review_required": True,
+                "error_type": type(exc).__name__,
+                "notes": "Summary ranking failed; validated findings are shown without model prioritization.",
+            }}
 
     graph = StateGraph(ReviewState)
     graph.add_node("tone_agent", tone_node)
