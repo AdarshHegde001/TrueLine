@@ -42,8 +42,11 @@ class PythonWorker {
   });
 
   constructor() {
-    const localVenvPython = path.join(projectRoot, '.venv', 'bin', 'python');
-    const python = process.env.PYTHON_BIN || (existsSync(localVenvPython) ? localVenvPython : 'python3');
+    const isWindows = process.platform === 'win32';
+    const localVenvPython = isWindows
+      ? path.join(projectRoot, '.venv', 'Scripts', 'python.exe')
+      : path.join(projectRoot, '.venv', 'bin', 'python');
+    const python = process.env.PYTHON_BIN || (existsSync(localVenvPython) ? localVenvPython : 'python');
     this.#child = spawn(python, ['-u', path.join(__dirname, 'python_worker.py')], {
       cwd: projectRoot,
       env: {

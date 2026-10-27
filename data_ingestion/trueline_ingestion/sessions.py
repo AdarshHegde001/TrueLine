@@ -29,9 +29,11 @@ def start_session(conn, organization_id: str) -> dict:
             "SELECT session_id FROM knowledge_sessions LIMIT 1"
         ).fetchone()
         if active:
-            raise ActiveSessionError("A session is already active. Resume it or end it first.")
+            # Auto-clear any stale session left over from a crash or unclean
+            # shutdown so the user is never permanently locked out.
+            _clear_knowledge(conn)
+            conn.execute("DELETE FROM knowledge_sessions")
 
-        _clear_knowledge(conn)
         session_id = str(uuid.uuid4())
         session_brand_id = f"{organization_id}__session_{session_id.replace('-', '')}"
         row = conn.execute(
