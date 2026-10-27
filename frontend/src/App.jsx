@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -26,6 +26,11 @@ function App() {
   const [activeTab, setActiveTab] = useState('home');
   const [health, setHealth] = useState(null);
   const [knowledgeFiles, setKnowledgeFiles] = useState([]);
+  const [logos, setLogos] = useState([]);
+  const [logoFile, setLogoFile] = useState(null);
+  const [logoTitle, setLogoTitle] = useState('');
+  const [logoBusy, setLogoBusy] = useState(false);
+  const logoInputRef = useRef(null);
   const [reviewFile, setReviewFile] = useState(null);
   const [channel, setChannel] = useState('advertisement');
   const [uploads, setUploads] = useState([]);
@@ -80,6 +85,11 @@ function App() {
             const sourceData = await sourceResponse.json();
             if (sourceResponse.ok) setUploads(sourceData.sources || []);
           } catch { /* Keep the valid session; source listing can be retried after reconnect. */ }
+          try {
+            const logoResponse = await fetch(`${API}/api/logos?sessionId=${encodeURIComponent(savedSessionId)}`);
+            const logoData = await logoResponse.json();
+            if (alive && logoResponse.ok) setLogos(logoData.logos || []);
+          } catch { /* Logo references can be refreshed after reconnect. */ }
         }
       } catch {
         if (!localStorage.getItem('trueline.sessionId') && alive) setSession(null);
@@ -104,6 +114,7 @@ function App() {
   function goToReview() {
     if (!session) return notify('Start a session before opening document review.');
     if (knowledgeBusy) return notify('Wait for the current embedding batch to finish first.');
+    if (logoBusy) return notify('Wait for the logo reference upload to finish first.');
     if (!uploads.length) return notify('Add and index approved sources before starting a review.');
     if (knowledgeFiles.some((item) => item.status !== 'ready')) return notify('Finish indexing every source file before moving to review.');
     setActiveTab('review');
@@ -125,6 +136,9 @@ function App() {
       setSession(data.session);
       setKnowledgeFiles([]);
       setUploads([]);
+      setLogos([]);
+      setLogoFile(null);
+      setLogoTitle('');
       setReviewFile(null);
       setReviewResult(null);
       setKnowledgeBatchComplete(false);
@@ -139,7 +153,7 @@ function App() {
 
   async function endSession() {
     if (!session) return;
-    if (knowledgeBusy || reviewBusy) return notify('Wait for the current operation to finish before ending the session.');
+    if (knowledgeBusy || reviewBusy || logoBusy) return notify('Wait for the current operation to finish before ending the session.');
     const approved = window.confirm('End this session and permanently delete all knowledge sources and embeddings from the database?');
     if (!approved) return;
     setSessionBusy(true);
@@ -156,6 +170,9 @@ function App() {
       setSession(null);
       setKnowledgeFiles([]);
       setUploads([]);
+      setLogos([]);
+      setLogoFile(null);
+      setLogoTitle('');
       setReviewFile(null);
       setReviewResult(null);
       setKnowledgeBatchComplete(false);
@@ -201,6 +218,44 @@ function App() {
     notify(failed ? `${failed} file${failed === 1 ? '' : 's'} failed to index. Fix or remove them and retry.` : 'All source files are embedded and indexed. You can continue to review.');
   }
 
+  async function submitLogo(event) {
+    event.preventDefault();
+    if (!session) return notify('Start a session before adding logo references.');
+    if (!logoFile) return notify('Choose a logo image first.');
+    setLogoBusy(true);
+    try {
+      const body = new FormData();
+      body.append('file', logoFile);
+      body.append('title', logoTitle.trim());
+      body.append('sessionId', session.sessionId);
+      const response = await fetch(`${API}/api/logos`, { method: 'POST', body });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not save this logo.');
+      setLogos((items) => [data.logo, ...items.filter((item) => item.logo_id !== data.logo.logo_id)]);
+      setLogoFile(null);
+      setLogoTitle('');
+      if (logoInputRef.current) logoInputRef.current.value = '';
+      notify('Approved logo reference saved for this session.');
+    } catch (error) {
+      notify(error.message);
+    } finally {
+      setLogoBusy(false);
+    }
+  }
+
+  async function removeLogo(logoId) {
+    if (!session) return;
+    try {
+      const response = await fetch(`${API}/api/logos/${encodeURIComponent(logoId)}?sessionId=${encodeURIComponent(session.sessionId)}`, { method: 'DELETE' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not remove this logo.');
+      setLogos((items) => items.filter((item) => item.logo_id !== logoId));
+      notify('Logo reference removed.');
+    } catch (error) {
+      notify(error.message);
+    }
+  }
+
   function addKnowledgeFiles(fileList) {
     const incoming = Array.from(fileList || []);
     if (!incoming.length) return;
@@ -237,6 +292,7 @@ function App() {
   const deterministicFindings = reviewResult?.preparedReview?.deterministic?.findings || [];
   const agentResults = reviewResult?.agentResults || {};
   const summaryResult = agentResults.summary;
+  const logoAgentResult = agentResults.logo;
   const specialistEvidence = reviewResult?.agentEvidence || {};
 
   return (
@@ -252,7 +308,7 @@ function App() {
         </nav>
         <div className="session-control">
           {session && <span className="session-state"><i /> Session active</span>}
-          {session ? <button className="session-button stop" disabled={sessionBusy || sessionLoading || knowledgeBusy || reviewBusy} onClick={endSession}>{sessionBusy ? 'Please wait…' : 'End session'}</button>
+          {session ? <button className="session-button stop" disabled={sessionBusy || sessionLoading || knowledgeBusy || reviewBusy || logoBusy} onClick={endSession}>{sessionBusy ? 'Please wait…' : 'End session'}</button>
             : <button className="session-button" disabled={sessionBusy || sessionLoading} onClick={startSession}>{sessionLoading ? 'Restoring…' : sessionBusy ? 'Starting…' : 'Start session'}</button>}
         </div>
       </header>
@@ -344,7 +400,7 @@ function App() {
                     <div className="batch-file-icon">▤</div>
                     <div className="batch-file-fields"><label className="field"><span>Source title</span><input value={item.title} aria-label={`Title for ${item.file.name}`} disabled={knowledgeBusy} onChange={(e) => { setKnowledgeBatchComplete(false); setKnowledgeFiles((items) => items.map((current) => current.id === item.id ? { ...current, title: e.target.value, status: current.status === 'ready' ? 'queued' : current.status, source: null } : current)); }} /></label><small className="batch-filename">{item.file.name} · {(item.file.size / 1024 / 1024).toFixed(2)} MB</small></div>
                     <label className="field batch-type"><span>Document type</span><select value={item.documentType} disabled={knowledgeBusy} onChange={(e) => { setKnowledgeBatchComplete(false); setKnowledgeFiles((items) => items.map((current) => current.id === item.id ? { ...current, documentType: e.target.value, status: current.status === 'ready' ? 'queued' : current.status, source: null } : current)); }}>{Object.entries(documentTypeLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
-                    <div className="batch-status"><StatusPill status={item.status === 'indexing' ? 'indexing' : item.status === 'queued' ? 'waiting' : item.status} />{item.error && <small className="batch-error">{item.error}</small>}</div>
+                    <div className="batch-status"><StatusPill status={item.status === 'indexing' ? 'indexing' : item.status === 'queued' ? 'waiting' : item.status} />{item.error && <small className="batch-error">{item.error}</small>}{item.source?.parse_warnings?.map((warning, index) => <small className="parse-warning" key={`${item.id}-warning-${index}`}>{warning}</small>)}</div>
                     {!knowledgeBusy && <button type="button" className="remove-file" aria-label={`Remove ${item.file.name}`} onClick={() => { setKnowledgeFiles((items) => items.filter((current) => current.id !== item.id)); setKnowledgeBatchComplete(false); }}>×</button>}
                   </div>)}
                   {knowledgeBusy && <div className="batch-progress"><div><span>Embedding and indexing sources sequentially</span><b>{knowledgeFiles.filter((item) => item.status === 'ready').length} / {knowledgeFiles.length}</b></div><progress max={knowledgeFiles.length} value={knowledgeFiles.filter((item) => item.status === 'ready').length} /></div>}
@@ -354,6 +410,20 @@ function App() {
                 <p className="fine-print">The selected document type is included in embedding input and stored as a retrieval filter. Structured deterministic rules are managed through the ingestion contract.</p>
               </form>
               <aside className="info-panel"><div className="info-icon">✳</div><h3>What happens after upload?</h3><ol><li><b>Text is extracted</b><span>PDF, DOCX and text files are parsed with source metadata.</span></li><li><b>Source is versioned</b><span>The original text and its selected document type are saved.</span></li><li><b>Search index is prepared</b><span>Typed chunks are embedded and made available to hybrid retrieval.</span></li></ol><div className="info-note"><b>Document type tip</b><p>Choose the closest purpose. Tone, claims, and fact agents filter retrieval using these types.</p></div></aside>
+            </div>
+
+            <div className="section-title-row library-title"><div><h2>Approved logo references</h2><p>Store the approved logo versions to keep them with this session.</p></div><span className="muted-label">{logos.length} LOGO{logos.length === 1 ? '' : 'S'}</span></div>
+            <div className="panel logo-library">
+              <form className="logo-upload-form" onSubmit={submitLogo}>
+                <label className="field logo-title-field"><span>Logo name <em>Optional</em></span><input value={logoTitle} maxLength={120} onChange={(event) => setLogoTitle(event.target.value)} placeholder={logoFile?.name?.replace(/\.[^.]+$/, '') || 'Primary logo'} disabled={logoBusy} /></label>
+                <label className="logo-picker"><input ref={logoInputRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => setLogoFile(event.target.files?.[0] || null)} disabled={logoBusy} /><span className="drop-icon">↑</span><span><b>{logoFile?.name || 'Choose an approved logo'}</b><small>PNG, JPEG, or WebP · up to 5 MB</small></span></label>
+                <button className="primary-button" type="submit" disabled={logoBusy || !logoFile}>{logoBusy ? <><span className="spinner" /> Saving…</> : <>Save logo <b>→</b></>}</button>
+              </form>
+              {logos.length > 0 ? <div className="logo-reference-list">{logos.map((logo) => <article className="logo-reference-item" key={logo.logo_id}>
+                <img src={`${API}/api/logos/${encodeURIComponent(logo.logo_id)}/image?sessionId=${encodeURIComponent(session.sessionId)}`} alt={logo.title} />
+                <div><b>{logo.title}</b><small>{logo.original_name} · {logo.width} × {logo.height}</small></div>
+                <button className="remove-file" type="button" aria-label={`Remove ${logo.title}`} onClick={() => removeLogo(logo.logo_id)} disabled={logoBusy}>×</button>
+              </article>)}</div> : <div className="logo-empty">Add one or more approved logo files. They stay private to this session.</div>}
             </div>
 
             <div className="section-title-row library-title"><div><h2>Recently added</h2><p>Uploads made during this session.</p></div><span className="muted-label">{uploads.length} SOURCE{uploads.length === 1 ? '' : 'S'}</span></div>
@@ -366,7 +436,8 @@ function App() {
             <div className="review-layout">
               <form className="panel review-form" onSubmit={submitReview}>
                 <div className="panel-heading"><div className="panel-step">1</div><div><h3>Choose the document</h3><p>We’ll parse it and locate relevant approved sources.</p></div></div>
-                <label className="dropzone review-drop" onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); setReviewFile(e.dataTransfer.files?.[0] || null); }}><input type="file" accept=".txt,.md,.pdf,.docx" onChange={(e) => setReviewFile(e.target.files?.[0] || null)} /><span className="drop-icon">↑</span><b>{reviewFile ? reviewFile.name : 'Choose a document to verify'}</b><small>PDF, DOCX, TXT or Markdown · up to 15 MB</small></label>
+                <label className="dropzone review-drop" onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); setReviewFile(e.dataTransfer.files?.[0] || null); }}><input type="file" accept=".txt,.md,.pdf,.docx,.png,.jpg,.jpeg,.webp" onChange={(e) => setReviewFile(e.target.files?.[0] || null)} /><span className="drop-icon">↑</span><b>{reviewFile ? reviewFile.name : 'Choose a document or image to verify'}</b><small>PDF, DOCX, TXT, Markdown, PNG, JPEG, or WebP · up to 15 MB</small></label>
+                <p className="image-privacy-note">Text and tables are extracted locally. Only approved logo references and image candidates matched to them are sent to the logo agent; charts and unrelated images stay local.</p>
                 <div className="form-grid review-fields single-field"><label className="field"><span>Channel <em>Optional</em></span><select value={channel} onChange={(e) => setChannel(e.target.value)}><option value="advertisement">Advertisement</option><option value="social">Social media</option><option value="website">Website</option><option value="email">Email</option><option value="">No channel</option></select></label></div>
                 <div className="review-pipeline"><div className="pipeline-title">REVIEW WORKFLOW</div><div className="pipeline-step"><span>1</span><div><b>Parse and check</b><small>Extract text and run deterministic rules</small></div></div><div className="pipeline-step"><span>2</span><div><b>Review voice and claims</b><small>Specialists retrieve relevant typed sources</small></div></div><div className="pipeline-step"><span>3</span><div><b>Summarize with citations</b><small>Final agent gets evidence and prior findings</small></div></div></div>
                 <button className="primary-button review-submit" disabled={reviewBusy || !reviewFile || !health || health.status !== 'ready'} type="submit">{reviewBusy ? <><span className="spinner" /> Running agents…</> : <>Run review <b>→</b></>}</button>
@@ -376,6 +447,8 @@ function App() {
 
             {reviewResult && <div className="results-section">
               <div className="results-heading"><div><div className="eyebrow"><span className="eyebrow-line" /> REVIEW OUTPUT</div><h2>Review results</h2></div><StatusPill status={summaryResult?.status || 'complete'} /></div>
+              {reviewResult.preparedReview?.document?.warnings?.length > 0 && <div className="parse-warning review-warning">{reviewResult.preparedReview.document.warnings.map((warning, index) => <p key={`review-warning-${index}`}>{warning}</p>)}</div>}
+              {reviewResult.visualAssets?.length > 0 && <div className="visual-review-notice"><b>{reviewResult.visualAssets.length} image{reviewResult.visualAssets.length === 1 ? '' : 's'} extracted</b><span>{[...new Set(reviewResult.visualAssets.map((item) => item.page))].map((page) => `page ${page}`).join(' · ')} · {reviewResult.logoReview?.notes || 'Visual review pending'}</span></div>}
               <div className="results-grid">
                 <div className="panel result-panel"><div className="result-panel-heading"><div><span className="result-index">A</span><h3>Deterministic checks</h3></div><span className="result-count">{deterministicFindings.length} FINDING{deterministicFindings.length === 1 ? '' : 'S'}</span></div>
                   {deterministicFindings.length ? <div className="finding-list">{deterministicFindings.map((finding) => <div className="finding" key={finding.finding_id}><div className={`finding-tag ${finding.label}`}>{finding.label.replace('_', ' ')}</div><div><b>{finding.rule_id}</b><p>{finding.explanation}</p>{finding.quote && <blockquote>“{finding.quote}”</blockquote>}<small>Source: {finding.source?.title || finding.source?.source_id} · {finding.source?.version_id}</small></div></div>)}</div> : <div className="no-findings"><span>✓</span><div><b>No deterministic findings</b><p>{reviewResult.preparedReview.deterministic.checks_run?.length ? 'Configured checks passed for the submitted text.' : 'No structured rules were configured for this brand and channel.'}</p></div></div>}
@@ -401,6 +474,18 @@ function App() {
                     })}</div>}
                   </div>;
                 })}
+                <div className="panel result-panel specialist-panel logo-review-panel">
+                  <div className="result-panel-heading"><div><span className="result-index">D</span><h3>Logo review</h3></div><span className="result-count">{String(logoAgentResult?.status || reviewResult.logoReview?.status || 'pending').replaceAll('_', ' ').toUpperCase()}</span></div>
+                  {logoAgentResult?.findings?.length ? <div className="agent-finding-list">{logoAgentResult.findings.map((finding, index) => {
+                    const reference = reviewResult.logoReferences?.find((item) => item.logo_id === finding.reference_logo_id);
+                    return <article className="agent-finding" key={`${finding.review_image_id}-${index}`}>
+                      <span className={`finding-tag ${finding.comparison === 'differences_observed' ? 'medium' : finding.comparison === 'matches_reference' ? 'supported' : 'unverified'}`}>{finding.comparison?.replaceAll('_', ' ')}</span>
+                      <b>Logo candidate on page {finding.page}</b><p>{finding.observation}</p>
+                      {reference && <small>Compared with: {reference.title} · {reference.original_name}</small>}
+                    </article>;
+                  })}</div> : <div className="agent-empty"><b>{logoAgentResult?.status === 'error' ? 'Logo agent could not complete' : logoAgentResult?.status === 'insufficient_evidence' ? 'Approved logo needed' : 'No likely logo matches found'}</b><p>{logoAgentResult?.notes || reviewResult.logoReview?.notes || 'Upload an approved logo reference to enable logo comparison.'}</p></div>}
+                  {reviewResult.logoReferences?.length > 0 && <div className="logo-review-references"><b>Approved references in this session</b>{reviewResult.logoReferences.map((logo) => <small key={logo.logo_id}>{logo.title} · {logo.original_name}</small>)}</div>}
+                </div>
               </div>
               <details className="context-details"><summary>Inspect the context sent for AI review</summary><pre>{JSON.stringify(reviewResult.preparedReview.ai_context, null, 2)}</pre></details>
             </div>}

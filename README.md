@@ -62,10 +62,10 @@ flowchart LR
 | `frontend/` | React/Vite interface for session control, reference uploads, and document review. Summary text is rendered as GitHub-flavored Markdown. |
 | `backend/` | Express HTTP API, multipart upload validation, session-aware requests, and a long-lived Python worker bridge. Loads `backend/.env`. |
 | `data_ingestion/` | PostgreSQL schema/migrations, source/version management, chunking, embeddings, hybrid search, and ephemeral session cleanup. |
-| `rag/parsing/` | Extracts text and location metadata from PDF, DOCX, Markdown, and plain text files. Scanned PDFs do not receive OCR. |
+| `rag/parsing/` | Extracts text and location metadata from PDF, DOCX, Markdown, and plain text files. Sparse image-heavy PDF pages use adaptive Tesseract OCR. |
 | `rag/rules/` | Evaluates structured deterministic rules supplied with an ingested source. It does not turn natural-language policy prose into executable rules. |
 | `rag/retrieval/` | Adapts the ingestion search interface and retrieves evidence for review passages while preserving source and location information. |
-| `rag/agentic/` | LangGraph tone, claims, and summary nodes; each node has its own provider, model, endpoint, key, and timeout settings. |
+| `rag/agentic/` | LangGraph tone, claims, logo comparison, and summary nodes; each node has its own provider, model, endpoint, key, and timeout settings. |
 
 ### Review workflow
 
@@ -84,8 +84,9 @@ The model steps are sequential: the claims agent receives the tone result, and t
 - macOS, Linux, or Windows with Docker Desktop / Docker Engine and Docker Compose
 - Node.js and npm (use a current Node.js LTS release)
 - Python 3.11 or 3.12
-- A Gemini API key for each of the three agent environment variables
+  - A Gemini API key for each configured agent environment variable, including the logo agent when visual review is enabled
 - Sufficient disk space and memory for the BGE-M3 dense embedding model. Its dense PyTorch checkpoint is approximately 2.27 GB and is downloaded to the Hugging Face cache on first model initialization; it is not stored in this repository.
+- Tesseract OCR with English language data for scanned PDF pages. PyMuPDF and its Python package do not install the Tesseract executable.
 
 The local database uses PostgreSQL 16 with the pgvector extension via the `pgvector/pgvector:pg16` container. It is exposed on host port `5433` to avoid the common local PostgreSQL port `5432`.
 
@@ -132,6 +133,10 @@ pip install -r rag/requirements.txt -r data_ingestion/requirements.txt
 
 On Windows PowerShell, activate with `.venv\Scripts\Activate.ps1`. The backend automatically uses this repository `.venv` if present. Otherwise, set `PYTHON_BIN` in `backend/.env` to the Python executable containing these dependencies.
 
+Install Tesseract separately: on macOS use `brew install tesseract`; on Debian/Ubuntu use `sudo apt-get install tesseract-ocr tesseract-ocr-eng`; on Windows install the Tesseract OCR application and ensure its executable is on `PATH`. The backend host/container must have Tesseract available to the Python worker. This repository runs PostgreSQL in Docker but does not define a backend container, so install Tesseract on the machine or deployment image that runs `backend/python_worker.py`. Digital PDF text extraction and DOCX/TXT/Markdown parsing work without Tesseract.
+
+The PDF parser OCRs a page only when native text is sparse and embedded images occupy at least 25% of the page. Tune `TRUELINE_OCR_MIN_CHARS` (default `40`), `TRUELINE_OCR_IMAGE_COVERAGE` (default `0.25`), and `TRUELINE_OCR_DPI` (default `200`, bounded to 120–300) in `backend/.env` if documents need different thresholds. OCR warnings are returned with parsed review documents and reference ingestion results. Reference PDF images are saved under `data_ingestion/extracted_assets/` (or `TRUELINE_ASSET_DIR`) with generated names and page/hash metadata stored on the source version; session reset/end removes these local artifacts. They are private local files with no public serving endpoint. A deployment with ephemeral disk will lose them on restart, so durable object storage is a future deployment requirement. Review-document images are not saved as approved reference assets. Vector-only page graphics are not currently rendered as fallback images.
+
 ### 3. Start the database
 
 In a separate terminal, from the repository root:
@@ -175,7 +180,7 @@ Open the Vite URL shown in the terminal (normally `http://localhost:5173`). The 
 4. Upload a `.txt`, `.md`, `.pdf`, or `.docx` verification document and choose a channel if relevant.
 5. Inspect the Markdown summary, deterministic findings, evidence, and citations. End the session to clear its data.
 
-The API accepts one file per `/api/knowledge` or `/api/review` request (15 MiB maximum). The UI accepts multiple files by submitting each file as its own upload request and waits for those requests to finish.
+The API accepts one file per `/api/knowledge` or `/api/review` request (15 MiB maximum). Review uploads also accept PNG, JPEG, and WebP images; their text is OCRed locally. Approved logo references can be uploaded separately as PNG, JPEG, or WebP (5 MiB each, up to 12 per session). References and review visuals are private, session-scoped local assets. The logo agent receives only approved logo references and standalone document images that pass local visual-hash screening against those references; OCR text alone cannot make an image eligible. Full-page renders, charts, and unrelated images are not sent to Gemini. Vector-heavy pages may be rendered for local extraction, but are excluded from logo-agent input. Set `TRUELINE_LOGO_PROVIDER`, `TRUELINE_LOGO_BASE_URL`, `TRUELINE_LOGO_API_KEY`, `TRUELINE_LOGO_MODEL`, and `TRUELINE_LOGO_TIMEOUT_SECONDS` in `backend/.env`. The Python worker applies `data_ingestion/migrations/004_logos.sql` when it starts.
 
 ## Embedding and search configuration
 
@@ -285,7 +290,7 @@ Start the backend and frontend as described above. Optional ingestion tests use 
 ## Current limitations
 
 - No authentication, user accounts, authorization, or multi-tenant isolation; the session token is not an access-control mechanism.
-- No OCR for scanned PDFs, and no browser-side upload persistence guarantees if the page is closed mid-upload.
+- OCR quality depends on scan quality and the locally installed Tesseract language data. Logo screening compares extracted images with uploaded references and may miss logos that are substantially altered or embedded as page-level vector artwork.
 - No natural-language policy-to-rule extraction or dedicated structured-rule editor in the UI.
 - Agent outputs can be incomplete or wrong; a human must verify the evidence and conclusions.
 - BGE-M3 uses a substantial local model download, and the current exact vector scan is intended for a small dataset.

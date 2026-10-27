@@ -1314,6 +1314,34 @@ h1, h2, h3, p { margin-top: 0; }
 .batch-filename { display: block; margin-top: 6px; overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .batch-status { display: grid; gap: 5px; justify-items: start; }
 .batch-error { max-width: 180px; color: var(--red); font-size: 11px; line-height: 1.35; }
+.parse-warning { display: block; max-width: 260px; color: #8a5b12; background: #fff6df; border-radius: 6px; padding: 6px 8px; font-size: 11px; line-height: 1.4; }
+.review-warning { margin: 0 0 16px; padding: 8px 12px; }
+.review-warning p { margin: 0; }
+.logo-library { padding: 18px; }
+.logo-upload-form { display: grid; grid-template-columns: minmax(150px, .8fr) minmax(240px, 1.5fr) auto; align-items: end; gap: 14px; }
+.logo-title-field { margin-bottom: 0; }
+.logo-picker { min-height: 58px; display: flex; align-items: center; gap: 12px; padding: 9px 12px; border: 1px dashed var(--line-2); border-radius: var(--r-sm); cursor: pointer; }
+.logo-picker input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.logo-picker .drop-icon { margin: 0; }
+.logo-picker b, .logo-picker small { display: block; }
+.logo-picker b { font-size: 12px; }
+.logo-picker small { margin-top: 4px; color: var(--muted); font-size: 11px; }
+.logo-upload-form .primary-button { min-height: 48px; }
+.logo-reference-list { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+.logo-reference-item { min-width: min(100%, 260px); display: flex; align-items: center; gap: 10px; padding: 9px 10px; border: 1px solid var(--line); border-radius: var(--r-sm); }
+.logo-reference-item img { width: 48px; height: 48px; object-fit: contain; background: #fff; border: 1px solid var(--line); border-radius: 6px; }
+.logo-reference-item div { flex: 1; min-width: 0; }
+.logo-reference-item b, .logo-reference-item small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.logo-reference-item b { font-size: 12px; }
+.logo-reference-item small { margin-top: 4px; color: var(--muted); font-size: 10px; }
+.logo-empty { margin-top: 14px; color: var(--muted); font-size: 12px; }
+.visual-review-notice { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 14px; margin-bottom: 14px; padding: 11px 14px; color: #315947; background: #eff8f2; border: 1px solid #d3e8da; border-radius: var(--r-sm); font-size: 12px; }
+.visual-review-notice span { color: var(--muted); }
+.image-privacy-note { margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.logo-review-panel { grid-column: 1 / -1; }
+.logo-review-references { display: grid; gap: 5px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.logo-review-references b { font-size: 11px; }
+.logo-review-references small { color: var(--muted); font-size: 11px; }
 .remove-file { width: 28px; height: 28px; border: 0; border-radius: 50%; background: transparent; color: var(--muted); font-size: 21px; line-height: 1; }
 .remove-file:hover { background: var(--red-pale); color: var(--red); }
 .batch-progress { padding: 14px 16px; border-top: 1px solid var(--line); background: #fff; }
@@ -1348,6 +1376,8 @@ h1, h2, h3, p { margin-top: 0; }
   .site-header { gap: 14px; }
 }
 @media (max-width: 720px) {
+  .logo-upload-form { grid-template-columns: 1fr; }
+  .logo-upload-form .primary-button { width: 100%; }
   .site-header { height: auto; min-height: 72px; flex-wrap: wrap; padding-block: 6px; }
   .logo-button { width: 150px; }
   .main-nav { order: 3; width: 100%; height: 38px; justify-content: center; }

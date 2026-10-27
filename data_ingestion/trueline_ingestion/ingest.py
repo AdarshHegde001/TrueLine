@@ -115,7 +115,7 @@ def _insert_version(conn, embedder, s: Settings, *, source_id, brand_id, number,
         raise ValidationFailed("text produced no chunks")
     for c in chunks:
         loc = {k: v for k, v in metadata.items()
-               if k in ("document_id", "document_name", "section", "page")}
+               if k in ("document_id", "document_name", "section", "page", "pages")}
         if document_id:
             loc.setdefault("document_id", document_id)
         if document_name:
@@ -123,6 +123,16 @@ def _insert_version(conn, embedder, s: Settings, *, source_id, brand_id, number,
         loc["title"] = title
         # offsets are into knowledge_source_versions.text (Python str indices)
         loc.update(char_start=c.char_start, char_end=c.char_end, offset_base="version_text")
+        page_spans = metadata.get("page_spans") or []
+        chunk_pages = sorted({
+            span["page"] for span in page_spans
+            if isinstance(span, dict) and span.get("page") is not None
+            and c.char_start < span.get("end", 0) and c.char_end > span.get("start", 0)
+        })
+        if len(chunk_pages) == 1:
+            loc["page"] = chunk_pages[0]
+        elif chunk_pages:
+            loc["pages"] = chunk_pages
         conn.execute(
             "INSERT INTO knowledge_chunks (chunk_id, brand_id, source_id, version_id, chunk_index,"
             " chunk_text, location, embedding_model, chunking_version, index_status, document_type) "

@@ -70,6 +70,8 @@ class ParsedDocument(BaseModel):
     parser_version: str
     offset_unit: Literal["unicode_code_points"] = "unicode_code_points"
     warnings: tuple[str, ...] = ()
+    pages: tuple["PageExtraction", ...] = ()
+    images: tuple["ExtractedImage", ...] = ()
 
     @model_validator(mode="after")
     def segments_match_document(self) -> "ParsedDocument":
@@ -83,6 +85,32 @@ class ParsedDocument(BaseModel):
                 raise ValueError("segments must be in source order and cannot overlap")
             previous_end = segment.end
         return self
+
+
+class PageExtraction(BaseModel):
+    """How text was recovered from one source page."""
+
+    model_config = ConfigDict(frozen=True)
+
+    page: int = Field(ge=1)
+    method: Literal["text", "ocr", "text+ocr", "empty"]
+    ocr_used: bool = False
+    character_count: int = Field(ge=0)
+
+
+class ExtractedImage(BaseModel):
+    """Non-public image artifact and its source-page provenance."""
+
+    model_config = ConfigDict(frozen=True)
+
+    image_id: str
+    page: int = Field(ge=1)
+    format: str | None = None
+    width: int = Field(ge=0)
+    height: int = Field(ge=0)
+    extraction_method: Literal["embedded", "submitted", "page_render"] = "embedded"
+    storage_ref: str | None = None
+    sha256: str
 
 
 class SourceReference(BaseModel):

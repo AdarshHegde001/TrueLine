@@ -7,6 +7,7 @@ from pathlib import PurePath
 from rag.models import ParsedDocument
 from rag.parsing.base import DocumentParseError
 from rag.parsing.docx import DocxParser
+from rag.parsing.image import ImageParser
 from rag.parsing.pdf import PdfParser
 from rag.parsing.plain_text import PlainTextParser
 
@@ -16,6 +17,8 @@ def parse_document(
     *,
     document_name: str,
     content_type: str | None = None,
+    store_images: bool = False,
+    asset_storage_dir: str | None = None,
 ) -> ParsedDocument:
     """Parse UTF-8 text, text-based PDF, or DOCX based on type/extension."""
 
@@ -26,12 +29,19 @@ def parse_document(
         ".md": PlainTextParser,
         ".pdf": PdfParser,
         ".docx": DocxParser,
+        ".png": ImageParser,
+        ".jpg": ImageParser,
+        ".jpeg": ImageParser,
+        ".webp": ImageParser,
     }
     media_type_parsers = {
         "text/plain": PlainTextParser,
         "text/markdown": PlainTextParser,
         "application/pdf": PdfParser,
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document": DocxParser,
+        "image/png": ImageParser,
+        "image/jpeg": ImageParser,
+        "image/webp": ImageParser,
     }
     parser_type = extension_parsers.get(extension)
     media_parser_type = media_type_parsers.get(normalized_type)
@@ -39,5 +49,9 @@ def parse_document(
         raise DocumentParseError("Filename extension conflicts with the declared content type")
     parser_type = media_parser_type or parser_type
     if parser_type:
-        return parser_type().parse(data, document_name=document_name)
+        parser = parser_type()
+        if parser_type in {PdfParser, ImageParser}:
+            return parser.parse(data, document_name=document_name, store_images=store_images,
+                                asset_storage_dir=asset_storage_dir)
+        return parser.parse(data, document_name=document_name)
     raise DocumentParseError(f"Unsupported document type: {content_type or extension or 'unknown'}")

@@ -30,6 +30,10 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: maxFileBytes, files: 1 },
 });
+const logoUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+});
 
 class PythonWorker {
   #child;
@@ -106,17 +110,38 @@ class PythonWorker {
 
 const worker = new PythonWorker();
 const allowedExtensions = new Set(['.txt', '.md', '.pdf', '.docx']);
+const logoTypes = new Map([
+  ['.png', 'image/png'], ['.jpg', 'image/jpeg'], ['.jpeg', 'image/jpeg'], ['.webp', 'image/webp'],
+]);
 
-function filePayload(file) {
+function filePayload(file, { allowImages = false } = {}) {
   if (!file) throw Object.assign(new Error('Choose a file to upload.'), { status: 400 });
   const ext = path.extname(file.originalname).toLowerCase();
-  if (!allowedExtensions.has(ext)) {
-    throw Object.assign(new Error('Supported files are TXT, MD, PDF, and DOCX.'), { status: 400 });
+  const allowed = allowImages ? new Set([...allowedExtensions, ...logoTypes.keys()]) : allowedExtensions;
+  if (!allowed.has(ext)) {
+    throw Object.assign(new Error(allowImages
+      ? 'Supported files are TXT, MD, PDF, DOCX, PNG, JPEG, and WebP.'
+      : 'Supported files are TXT, MD, PDF, and DOCX.'), { status: 400 });
   }
   return {
     fileBase64: file.buffer.toString('base64'),
     fileName: path.basename(file.originalname),
     contentType: file.mimetype,
+  };
+}
+
+function logoPayload(file) {
+  if (!file) throw Object.assign(new Error('Choose a logo image to upload.'), { status: 400 });
+  const fileName = path.basename(file.originalname);
+  const ext = path.extname(fileName).toLowerCase();
+  const expectedType = logoTypes.get(ext);
+  if (!expectedType || file.mimetype !== expectedType) {
+    throw Object.assign(new Error('Logo images must be PNG, JPEG, or WebP.'), { status: 400 });
+  }
+  return {
+    fileBase64: file.buffer.toString('base64'),
+    fileName,
+    contentType: expectedType,
   };
 }
 
@@ -179,6 +204,52 @@ app.get('/api/knowledge', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+app.get('/api/logos', async (req, res, next) => {
+  try {
+    const logos = await worker.call('list_logos', {
+      sessionId: requiredField(req.query.sessionId, 'Session'),
+      organizationId: organizationBrandId,
+    });
+    res.json({ logos });
+  } catch (error) { next(error); }
+});
+
+app.post('/api/logos', logoUpload.single('file'), async (req, res, next) => {
+  try {
+    const payload = logoPayload(req.file);
+    const logo = await worker.call('upload_logo', {
+      ...payload,
+      sessionId: requiredField(req.body.sessionId, 'Session'),
+      organizationId: organizationBrandId,
+      title: String(req.body.title || '').trim(),
+    });
+    res.status(201).json({ logo });
+  } catch (error) { next(error); }
+});
+
+app.get('/api/logos/:logoId/image', async (req, res, next) => {
+  try {
+    const image = await worker.call('get_logo_image', {
+      logoId: requiredField(req.params.logoId, 'Logo ID'),
+      sessionId: requiredField(req.query.sessionId, 'Session'),
+      organizationId: organizationBrandId,
+    });
+    res.set('Cache-Control', 'private, no-store');
+    res.type(image.contentType).send(Buffer.from(image.fileBase64, 'base64'));
+  } catch (error) { next(error); }
+});
+
+app.delete('/api/logos/:logoId', async (req, res, next) => {
+  try {
+    const result = await worker.call('delete_logo', {
+      logoId: requiredField(req.params.logoId, 'Logo ID'),
+      sessionId: requiredField(req.query.sessionId, 'Session'),
+      organizationId: organizationBrandId,
+    });
+    res.json(result);
+  } catch (error) { next(error); }
+});
+
 app.post('/api/knowledge', upload.single('file'), async (req, res, next) => {
   try {
     const documentType = req.body.documentType;
@@ -209,7 +280,7 @@ app.post('/api/knowledge', upload.single('file'), async (req, res, next) => {
 
 app.post('/api/review', upload.single('file'), async (req, res, next) => {
   try {
-    const file = filePayload(req.file);
+    const file = filePayload(req.file, { allowImages: true });
     const review = await worker.call('review', {
       ...file,
       sessionId: requiredField(req.body.sessionId, 'Session'),

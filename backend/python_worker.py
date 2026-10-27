@@ -7,6 +7,7 @@ import base64
 import json
 import os
 import sys
+import tempfile
 import traceback
 from pathlib import Path
 
@@ -29,6 +30,7 @@ def main() -> None:
             from rag.review import prepare_review
             from rag.retrieval.client import IngestionKnowledgeAdapter
             from trueline_ingestion import db, ingest
+            from trueline_ingestion import logos
             from trueline_ingestion.config import get_settings
             from trueline_ingestion.embeddings import BGEM3Embedder, FakeEmbedder
             from trueline_ingestion.models import SourceCreate
@@ -57,7 +59,7 @@ def main() -> None:
                 elif operation == "review":
                     result = _review(request, parse_document, prepare_review,
                                      IngestionKnowledgeAdapter, knowledge, db, ingest, settings,
-                                     run_agentic_review, sessions)
+                                     run_agentic_review, sessions, logos)
                 elif operation == "start_session":
                     with db.connect(settings) as conn:
                         result = sessions.start_session(conn, request["organizationId"])
@@ -75,6 +77,31 @@ def main() -> None:
                     brand_id = _session_brand_id(request, db, settings, sessions)
                     with db.connect(settings) as conn:
                         result = sessions.list_sources(conn, brand_id)
+                elif operation == "list_logos":
+                    brand_id = _session_brand_id(request, db, settings, sessions)
+                    with db.connect(settings) as conn:
+                        result = logos.list_logos(conn, brand_id)
+                elif operation == "upload_logo":
+                    brand_id = _session_brand_id(request, db, settings, sessions)
+                    logo_data = base64.b64decode(request["fileBase64"], validate=True)
+                    with db.connect(settings) as conn:
+                        result = logos.add_logo(
+                            conn, brand_id=brand_id, title=request.get("title", ""),
+                            filename=request["fileName"], content_type=request["contentType"],
+                            data=logo_data,
+                        )
+                elif operation == "delete_logo":
+                    brand_id = _session_brand_id(request, db, settings, sessions)
+                    with db.connect(settings) as conn:
+                        result = logos.delete_logo(conn, brand_id, request["logoId"])
+                elif operation == "get_logo_image":
+                    brand_id = _session_brand_id(request, db, settings, sessions)
+                    with db.connect(settings) as conn:
+                        logo_record, image_data = logos.read_logo(conn, brand_id, request["logoId"])
+                    result = {
+                        "contentType": logo_record["content_type"],
+                        "fileBase64": base64.b64encode(image_data).decode("ascii"),
+                    }
                 else:
                     raise ValueError(f"Unsupported worker operation: {operation}")
                 emit({"id": request.get("id"), "ok": True, "result": result})
@@ -99,7 +126,7 @@ def _ingest(request, parse_document, ingest, SourceCreate, db, settings, embedde
     brand_id = _session_brand_id(request, db, settings, sessions)
     data = base64.b64decode(request["fileBase64"], validate=True)
     document = parse_document(data, document_name=request["fileName"],
-                              content_type=request.get("contentType"))
+                              content_type=request.get("contentType"), store_images=True)
     document_type = request["documentType"]
     source_type = "approved_fact" if document_type in {"approved_claims", "product_facts"} else "guideline"
     record = SourceCreate(
@@ -114,6 +141,12 @@ def _ingest(request, parse_document, ingest, SourceCreate, db, settings, embedde
             "parser_version": document.parser_version,
             "offset_unit": document.offset_unit,
             "parse_warnings": list(document.warnings),
+            "page_extraction": [page.model_dump() for page in document.pages],
+            "images": [image.model_dump() for image in document.images],
+            "page_spans": [
+                {"page": segment.page, "start": segment.start, "end": segment.end}
+                for segment in document.segments if segment.page is not None
+            ],
             "document_type": document_type,
         },
         rule_data=request.get("ruleData") or [],
@@ -133,30 +166,136 @@ def _ingest(request, parse_document, ingest, SourceCreate, db, settings, embedde
         "chunk_count": len(ingest.chunk_text(document.text, settings.chunk_max_chars)),
         "rule_count": len(result.rule_data),
         "parse_warnings": list(document.warnings),
+        "pages_processed": len(document.pages),
+        "ocr_pages": sum(page.ocr_used for page in document.pages),
+        "image_count": len(document.images),
     }
 
 
-def _review(request, parse_document, prepare_review, Adapter, knowledge, db, ingest, settings, run_agentic_review, sessions):
+def _review(request, parse_document, prepare_review, Adapter, knowledge, db, ingest, settings,
+            run_agentic_review, sessions, logos):
     brand_id = _session_brand_id(request, db, settings, sessions)
     data = base64.b64decode(request["fileBase64"], validate=True)
-    document = parse_document(data, document_name=request["fileName"],
-                              content_type=request.get("contentType"))
-
-    def load_rules(*, brand_id: str, channel: str | None):
+    with tempfile.TemporaryDirectory(prefix="trueline-review-") as image_root:
+        document = parse_document(
+            data, document_name=request["fileName"], content_type=request.get("contentType"),
+            store_images=True, asset_storage_dir=image_root,
+        )
         with db.connect(settings) as conn:
-            return ingest.get_deterministic_rules(conn, brand_id, channel)
+            logo_records = logos.get_logo_assets(conn, brand_id)
+            deterministic_rules = ingest.get_deterministic_rules(conn, brand_id, request.get("channel") or None)
+        approved_logos = []
+        for logo in logo_records:
+            try:
+                approved_logos.append({
+                    **logo,
+                    "data": logos.read_storage_ref(logo["storage_ref"]),
+                })
+            except Exception:
+                continue
+        logo_candidates = _select_logo_candidates(document.images, image_root, approved_logos)
+        # Temporary paths are internal only; return source/page/hash metadata, not paths.
+        safe_images = tuple(image.model_copy(update={"storage_ref": None}) for image in document.images)
+        document = document.model_copy(update={"images": safe_images})
 
-    adapter = Adapter(
-        search_knowledge=lambda search_request: knowledge.search(search_request).model_dump(),
-        get_deterministic_rules=load_rules,
-    )
-    prepared = prepare_review(
-        document,
-        brand_id=brand_id,
-        channel=request.get("channel") or None,
-        retriever=adapter,
-    )
-    return run_agentic_review(prepared, adapter)
+        adapter = Adapter(
+            search_knowledge=lambda search_request: knowledge.search(search_request).model_dump(),
+            get_deterministic_rules=lambda **kwargs: deterministic_rules,
+        )
+        prepared = prepare_review(
+            document,
+            brand_id=brand_id,
+            channel=request.get("channel") or None,
+            retriever=adapter,
+        )
+        result = run_agentic_review(
+            prepared, adapter, logo_candidates=logo_candidates, approved_logos=approved_logos,
+        )
+        result["visualAssets"] = [image.model_dump(mode="json") for image in safe_images]
+        result["logoReferences"] = [
+            {key: value for key, value in logo.items()
+             if key not in {"storage_ref", "sha256", "visual_hash", "ocr_text", "data"}}
+            for logo in logo_records
+        ]
+        result["logoReview"] = result["agentResults"].get("logo", {})
+        return result
+
+
+def _select_logo_candidates(images, image_root, approved_logos):
+    """OCR/hash-filter locally; only likely matches reach the external logo agent."""
+    if not approved_logos:
+        return []
+    from rag.parsing.image import ImageParser
+    from rag.parsing.vision import hash_similarity, image_dhash, normalized_image_text
+
+    reference_tokens = {
+        logo["logo_id"]: normalized_image_text(logo.get("ocr_text", ""))
+        for logo in approved_logos
+    }
+    references_by_hash = []
+    for logo in approved_logos:
+        try:
+            visual_hash = logo.get("visual_hash") or image_dhash(logo["data"])
+        except Exception:
+            visual_hash = ""
+        references_by_hash.append((logo, visual_hash))
+
+    candidates = []
+    for image in images:
+        # A rendered PDF page contains charts and text around vector graphics, so it
+        # is never sent as a logo candidate. Only standalone image assets are screened.
+        if image.extraction_method == "page_render" or not image.storage_ref:
+            continue
+        image_path = (Path(image_root) / image.storage_ref).resolve()
+        if Path(image_root).resolve() not in image_path.parents:
+            continue
+        try:
+            image_data = image_path.read_bytes()
+            candidate_hash = image_dhash(image_data)
+        except Exception:
+            continue
+        extension = str(image.format or "").lower()
+        content_type = {
+            "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp",
+        }.get(extension)
+        if not content_type:
+            continue
+        similarities = [
+            (hash_similarity(candidate_hash, reference_hash), logo)
+            for logo, reference_hash in references_by_hash
+        ]
+        # Skip OCR for images that are visually far from every approved logo.
+        # Text such as a chart title or brand name alone must never make an image
+        # eligible for upload to Gemini.
+        if not similarities or max(score for score, _logo in similarities) < 0.70:
+            continue
+        try:
+            candidate_ocr = ImageParser().parse(
+                image_data, document_name=f"candidate.{extension}", store_images=False,
+            ).text
+        except Exception:
+            candidate_ocr = ""
+        candidate_tokens = normalized_image_text(candidate_ocr)
+        best = (0.0, None)
+        for similarity, logo in similarities:
+            shared_tokens = candidate_tokens & reference_tokens[logo["logo_id"]]
+            text_match = bool(shared_tokens)
+            # Exact/near visual matches pass directly. Lower similarity needs
+            # matching logo text as a second signal, reducing chart false positives.
+            score = similarity if similarity >= 0.82 or (similarity >= 0.70 and text_match) else 0.0
+            if score > best[0]:
+                best = (score, logo)
+        if best[1] is None:
+            continue
+        candidates.append({
+            "image_id": image.image_id,
+            "page": image.page or 1,
+            "content_type": content_type,
+            "data": image_data,
+            "matched_reference_id": best[1]["logo_id"],
+            "local_match_score": round(best[0], 3),
+        })
+    return candidates
 
 
 if __name__ == "__main__":

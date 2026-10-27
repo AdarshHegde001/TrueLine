@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+import os
+from pathlib import Path
+import shutil
 import uuid
 
 from .errors import ValidationFailed
@@ -20,6 +23,20 @@ def _clear_knowledge(conn) -> None:
     conn.execute("DELETE FROM knowledge_chunks")
     conn.execute("DELETE FROM knowledge_source_versions")
     conn.execute("DELETE FROM knowledge_sources")
+    _clear_extracted_assets()
+
+
+def _clear_extracted_assets() -> None:
+    """Remove private local PDF image artifacts with this prototype's session data."""
+    default_root = Path(__file__).resolve().parents[2] / "data_ingestion" / "extracted_assets"
+    root = Path(os.environ.get("TRUELINE_ASSET_DIR", default_root)).resolve()
+    # Only ever remove generated doc_* children, never the configured root itself.
+    if not root.exists() or not root.is_dir():
+        return
+    for pattern in ("doc_*", "logo_*"):
+        for child in root.glob(pattern):
+            if child.is_dir() and child.parent == root:
+                shutil.rmtree(child, ignore_errors=True)
 
 
 def start_session(conn, organization_id: str) -> dict:
