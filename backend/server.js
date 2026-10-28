@@ -23,7 +23,10 @@ const documentTypes = new Set([
   'glossary', 'asset_rules', 'legal_compliance', 'other_reference',
 ]);
 
-app.use(cors({ origin: process.env.FRONTEND_ORIGIN || 'http://localhost:5173' }));
+app.use(cors({
+  origin: process.env.FRONTEND_ORIGIN || 'http://localhost:5173',
+  exposedHeaders: ['X-Trueline-Edits-Applied', 'X-Trueline-Unresolved-Count', 'X-Trueline-Format-Note'],
+}));
 app.use(express.json({ limit: '1mb' }));
 
 const upload = multer({
@@ -288,6 +291,29 @@ app.post('/api/review', upload.single('file'), async (req, res, next) => {
       channel: String(req.body.channel || '').trim(),
     });
     res.json(review);
+  } catch (error) { next(error); }
+});
+
+app.post('/api/review/correct', upload.single('file'), async (req, res, next) => {
+  try {
+    const file = filePayload(req.file, { allowImages: true });
+    let reviewData;
+    try { reviewData = JSON.parse(req.body.reviewData || ''); }
+    catch { throw Object.assign(new Error('Completed review findings are required.'), { status: 400 }); }
+    const result = await worker.call('correct', {
+      ...file,
+      sessionId: requiredField(req.body.sessionId, 'Session'),
+      organizationId: organizationBrandId,
+      reviewData,
+    });
+    const stem = path.parse(file.fileName).name.replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 100) || 'review';
+    const filename = `${stem}-corrected.docx`;
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('X-Trueline-Edits-Applied', String(result.editsApplied || 0));
+    res.setHeader('X-Trueline-Unresolved-Count', String(result.unresolvedFindings?.length || 0));
+    res.setHeader('X-Trueline-Format-Note', encodeURIComponent(result.formatNote || ''));
+    res.send(Buffer.from(result.fileBase64, 'base64'));
   } catch (error) { next(error); }
 });
 

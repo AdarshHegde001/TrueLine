@@ -130,6 +130,8 @@ function App() {
   const [knowledgeBusy, setKnowledgeBusy] = useState(false);
   const [knowledgeBatchComplete, setKnowledgeBatchComplete] = useState(false);
   const [reviewBusy, setReviewBusy] = useState(false);
+  const [correctionBusy, setCorrectionBusy] = useState(false);
+  const [correctedDocx, setCorrectedDocx] = useState(null);
   const [toast, setToast] = useState('');
   const [dragOver, setDragOver] = useState(false);
   const [reviewDragOver, setReviewDragOver] = useState(false);
@@ -232,6 +234,7 @@ function App() {
       setLogoTitle('');
       setReviewFile(null);
       setReviewResult(null);
+      setCorrectedDocx(null);
       setKnowledgeBatchComplete(false);
       setActiveTab('knowledge');
       notify('Session started. Add your source files; they will be cleared when you end the session.');
@@ -244,7 +247,7 @@ function App() {
 
   async function endSession() {
     if (!session) return;
-    if (knowledgeBusy || reviewBusy || logoBusy) return notify('Wait for the current operation to finish before ending the session.');
+    if (knowledgeBusy || reviewBusy || correctionBusy || logoBusy) return notify('Wait for the current operation to finish before ending the session.');
     const approved = window.confirm('End this session and permanently delete all knowledge sources and embeddings from the database?');
     if (!approved) return;
     setSessionBusy(true);
@@ -266,6 +269,7 @@ function App() {
       setLogoTitle('');
       setReviewFile(null);
       setReviewResult(null);
+      setCorrectedDocx(null);
       setKnowledgeBatchComplete(false);
       setActiveTab('home');
       notify('Session ended. All uploaded knowledge and embeddings were cleared.');
@@ -363,6 +367,7 @@ function App() {
     if (!reviewFile) return notify('Choose a document to verify first.');
     setReviewBusy(true);
     setReviewResult(null);
+    setCorrectedDocx(null);
     setToast('');
     try {
       const body = new FormData();
@@ -378,6 +383,60 @@ function App() {
     } finally {
       setReviewBusy(false);
     }
+  }
+
+  async function generateCorrection() {
+    if (!session || !reviewFile || !summaryResult?.summary) return notify('Complete a review before generating a corrected draft.');
+    setCorrectionBusy(true);
+    setCorrectedDocx(null);
+    try {
+      const findings = [
+        ...deterministicFindings.map((finding) => ({
+          category: 'Deterministic', classification: finding.label?.toUpperCase(), severity: finding.severity,
+          document_quote: finding.quote, explanation: finding.explanation, rule_id: finding.rule_id,
+          citations: finding.source ? [{ source_id: finding.source.source_id, version_id: finding.source.version_id,
+            source_title: finding.source.title, quote: finding.source.excerpt }] : [],
+        })),
+        ...['tone', 'claims'].flatMap((category) => (agentResults[category]?.findings || []).map((finding) => ({ category, ...finding }))),
+        ...(logoAgentResult?.findings || []).map((finding) => ({
+          category: 'Logo observation', page: finding.page, observation: finding.observation,
+          comparison: finding.comparison, classification: finding.classification,
+        })),
+      ];
+      const body = new FormData();
+      body.append('file', reviewFile);
+      body.append('sessionId', session.sessionId);
+      body.append('reviewData', JSON.stringify({ summary: summaryResult.summary, findings }));
+      const response = await fetch(`${API}/api/review/correct`, { method: 'POST', body });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Could not generate a corrected draft.');
+      }
+      const blob = await response.blob();
+      const stem = reviewFile.name.replace(/\.[^.]+$/, '') || 'review';
+      setCorrectedDocx({
+        blob, filename: `${stem}-corrected.docx`,
+        editsApplied: Number(response.headers.get('X-Trueline-Edits-Applied') || 0),
+        unresolvedCount: Number(response.headers.get('X-Trueline-Unresolved-Count') || 0),
+        formatNote: decodeURIComponent(response.headers.get('X-Trueline-Format-Note') || ''),
+      });
+    } catch (error) {
+      notify(error.message);
+    } finally {
+      setCorrectionBusy(false);
+    }
+  }
+
+  function downloadCorrection() {
+    if (!correctedDocx) return;
+    const url = URL.createObjectURL(correctedDocx.blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = correctedDocx.filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   const deterministicFindings = reviewResult?.preparedReview?.deterministic?.findings || [];
@@ -399,7 +458,7 @@ function App() {
         </nav>
         <div className="session-control">
           {session && <span className="session-state"><i /> Session active</span>}
-          {session ? <button className="session-button stop" disabled={sessionBusy || sessionLoading || knowledgeBusy || reviewBusy || logoBusy} onClick={endSession}>{sessionBusy ? 'Please wait…' : 'End session'}</button>
+          {session ? <button className="session-button stop" disabled={sessionBusy || sessionLoading || knowledgeBusy || reviewBusy || correctionBusy || logoBusy} onClick={endSession}>{sessionBusy ? 'Please wait…' : 'End session'}</button>
             : <button className="session-button" disabled={sessionBusy || sessionLoading} onClick={startSession}>{sessionLoading ? 'Restoring…' : sessionBusy ? 'Starting…' : 'Start session'}</button>}
         </div>
       </header>
@@ -677,11 +736,11 @@ function App() {
               </div>
               <div className="rguide-item">
                 <span className="rguide-icon">✧</span>
-                <div><b>Run the review</b><small>Deterministic rules + 3 AI agents</small></div>
+                <div><b>Run the review</b><small>Tone, claims, logo + summary agents</small></div>
               </div>
               <div className="rguide-item">
                 <span className="rguide-icon">◈</span>
-                <div><b>Read the findings</b><small>Every flag links back to its source</small></div>
+                <div><b>Read findings or request a DOCX</b><small>Optional corrected draft after review</small></div>
               </div>
             </div>
 
@@ -692,9 +751,9 @@ function App() {
                   className={`dropzone review-drop${reviewDragOver ? ' dropzone--active' : ''}`}
                   onDragOver={(e) => { e.preventDefault(); setReviewDragOver(true); }}
                   onDragLeave={() => setReviewDragOver(false)}
-                  onDrop={(e) => { e.preventDefault(); setReviewDragOver(false); setReviewFile(e.dataTransfer.files?.[0] || null); }}
+                  onDrop={(e) => { e.preventDefault(); setReviewDragOver(false); setReviewFile(e.dataTransfer.files?.[0] || null); setReviewResult(null); setCorrectedDocx(null); }}
                 >
-                  <input type="file" accept=".txt,.md,.pdf,.docx,.png,.jpg,.jpeg,.webp" onChange={(e) => setReviewFile(e.target.files?.[0] || null)} />
+                  <input type="file" accept=".txt,.md,.pdf,.docx,.png,.jpg,.jpeg,.webp" onChange={(e) => { setReviewFile(e.target.files?.[0] || null); setReviewResult(null); setCorrectedDocx(null); }} />
                   <span className="drop-icon">↑</span><b>{reviewFile ? reviewFile.name : 'Choose a document or image to verify'}</b><small>PDF, DOCX, TXT, Markdown, PNG, JPEG, or WebP · up to 15 MB</small>
                 </label>
                 <p className="image-privacy-note">Text and tables are extracted locally. Only approved logo references and image candidates matched to them are sent to the logo agent; charts and unrelated images stay local.</p>
@@ -728,6 +787,13 @@ function App() {
               <div className="panel result-panel ai-panel summary-panel"><div className="result-panel-heading"><div><span className="result-index ai-index">✦</span><h3>Final review summary</h3></div><span className="result-count">{summaryResult?.status === 'error' ? 'CHECK FAILED' : 'COMPLETED'}</span></div>
                 {summaryResult?.summary ? <MarkdownText className="markdown-summary">{summaryResult.summary}</MarkdownText> : <div className="ai-empty"><div className="ai-empty-icon">✦</div><b>{summaryResult?.status === 'error' ? 'Summary unavailable' : 'No summary returned'}</b><p>The deterministic results and specialist agent outputs are shown below.</p></div>}
                 {summaryResult?.key_findings?.length > 0 && <div className="summary-key-findings"><b>Key findings</b><ul>{summaryResult.key_findings.map((finding, index) => <li key={`${index}-${finding}`}>{finding}</li>)}</ul></div>}
+                {summaryResult?.summary && summaryResult?.status !== 'error' && <div className="correction-action">
+                  <div><b>Create a corrected draft?</b><p>The correction agent will use the original upload and the findings above to prepare a DOCX draft. Review it before use.</p></div>
+                  {correctedDocx
+                    ? <button className="primary-button" type="button" onClick={downloadCorrection}>Download corrected DOCX <b>↓</b></button>
+                    : <button className="primary-button" type="button" onClick={generateCorrection} disabled={correctionBusy || reviewBusy}>{correctionBusy ? <><span className="spinner" /> Generating…</> : <>Generate corrected DOCX <b>→</b></>}</button>}
+                </div>}
+                {correctedDocx && <p className="correction-success" role="status">Draft ready: {correctedDocx.editsApplied} edit{correctedDocx.editsApplied === 1 ? '' : 's'} applied{correctedDocx.unresolvedCount ? ` · ${correctedDocx.unresolvedCount} item${correctedDocx.unresolvedCount === 1 ? '' : 's'} need manual review` : ''}. {correctedDocx.formatNote || 'Formatting and visuals may differ from the uploaded file.'} Please review the draft before use.</p>}
               </div>
               <div className="results-grid">
                 <div className="panel result-panel"><div className="result-panel-heading"><div><span className="result-index">A</span><h3>Deterministic checks</h3></div><span className="result-count">{deterministicFindings.length} FINDING{deterministicFindings.length === 1 ? '' : 'S'}</span></div>

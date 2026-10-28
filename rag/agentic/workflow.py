@@ -150,7 +150,7 @@ def _settings(agent: str) -> ModelSettings:
 def model_configuration() -> dict[str, dict[str, str]]:
     """Return safe, non-secret model descriptors for health/API responses."""
     result: dict[str, dict[str, str]] = {}
-    for name in ("tone", "claims", "logo", "summary"):
+    for name in ("tone", "claims", "logo", "summary", "correction"):
         settings = _settings(name)
         result[name] = {
             "provider": settings.provider,

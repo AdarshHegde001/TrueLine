@@ -1138,6 +1138,12 @@ h1, h2, h3, p { margin-top: 0; }
 .summary-panel .result-panel-heading { padding-bottom: 16px; }
 .summary-panel .result-panel-heading h3 { color: var(--ink); font-size: 17px; }
 .summary-panel .markdown-summary { font-size: 15px; }
+.correction-action { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-top: 22px; padding: 16px 18px; border: 1px solid #d6e7de; border-radius: var(--r-md); background: #f6fbf8; }
+.correction-action > div { min-width: 0; }
+.correction-action b { color: var(--ink); font-size: 13px; }
+.correction-action p { margin: 4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.correction-action .primary-button { flex: 0 0 auto; }
+.correction-success { margin: 10px 0 0; color: var(--teal-dark); font-size: 12px; }
 .specialist-details { padding: 0 18px; }
 .specialist-details > summary { min-height: 64px; cursor: pointer; list-style: none; }
 .specialist-details > summary::-webkit-details-marker { display: none; }
@@ -1340,6 +1346,8 @@ h1, h2, h3, p { margin-top: 0; }
   .info-note { grid-column: 1 / -1; }
 }
 @media (max-width: 720px) {
+  .correction-action { align-items: stretch; flex-direction: column; }
+  .correction-action .primary-button { width: 100%; }
   .site-header { height: 72px; padding: 0 18px; gap: 12px; }
   .logo-button { width: 200px; height: 60px; }
   .main-nav { gap: 0; }

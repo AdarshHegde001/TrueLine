@@ -27,6 +27,7 @@ def main() -> None:
         with contextlib.redirect_stdout(sys.stderr):
             from rag.parsing.registry import parse_document
             from rag.agentic.workflow import model_configuration, run_agentic_review
+            from rag.agentic.correction import generate_corrected_docx
             from rag.review import prepare_review
             from rag.retrieval.client import IngestionKnowledgeAdapter
             from trueline_ingestion import db, ingest
@@ -60,6 +61,9 @@ def main() -> None:
                     result = _review(request, parse_document, prepare_review,
                                      IngestionKnowledgeAdapter, knowledge, db, ingest, settings,
                                      run_agentic_review, sessions, logos)
+                elif operation == "correct":
+                    result = _correct(request, parse_document, generate_corrected_docx,
+                                      sessions, db, settings)
                 elif operation == "start_session":
                     with db.connect(settings) as conn:
                         result = sessions.start_session(conn, request["organizationId"])
@@ -219,6 +223,16 @@ def _review(request, parse_document, prepare_review, Adapter, knowledge, db, ing
         ]
         result["logoReview"] = result["agentResults"].get("logo", {})
         return result
+
+
+def _correct(request, parse_document, generate_corrected_docx, sessions, db, settings):
+    _session_brand_id(request, db, settings, sessions)
+    data = base64.b64decode(request["fileBase64"], validate=True)
+    document = parse_document(
+        data, document_name=request["fileName"], content_type=request.get("contentType"),
+        store_images=False,
+    )
+    return generate_corrected_docx(document, request.get("reviewData"))
 
 
 def _select_logo_candidates(images, image_root, approved_logos):

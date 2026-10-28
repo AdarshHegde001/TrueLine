@@ -27,8 +27,9 @@ The current baseline is a single-organization, one-active-session prototype. It 
 1. Start a session. The API clears the previous session's indexed knowledge and creates a new isolated knowledge scope.
 2. Upload one or more reference files and assign a document type to each. Each file is parsed, chunked, embedded with BGE-M3, and stored in PostgreSQL with its source, version, and type metadata.
 3. Upload a draft to review and optionally select its channel. The backend parses it, runs available structured deterministic rules, and retrieves relevant passages.
-4. LangGraph runs the tone agent, claims agent, and summarizer in sequence. The frontend renders the summary as Markdown and shows findings and citations.
-5. End the session when finished. The prototype deletes the session's sources, versions, chunks, and embeddings so a later session starts clean.
+4. LangGraph runs the tone agent, claims agent, logo reviewer, and summarizer. The frontend renders the summary as Markdown and shows findings and citations.
+5. If the user requests a corrected version, the correction agent receives the original parsed document and completed review findings. It returns exact-span edits, and the backend applies only edits whose quoted text matches the original before generating a DOCX draft for the user to inspect.
+6. End the session when finished. The prototype deletes the session's sources, versions, chunks, and embeddings so a later session starts clean.
 
 ## Architecture
 
@@ -76,6 +77,7 @@ flowchart LR
 5. **Verify claims.** The claims agent searches approved claims, product facts, brand guidance, and legal/compliance references. Supported or contradicted claim findings require citations to approved-fact sources; without that evidence, a claim stays unverified.
 6. **Summarize.** The summary agent receives the review context, deterministic findings, retrieved evidence, and both specialist results. It returns Markdown and keeps human review required.
 7. **Render.** The API returns structured results and evidence to the frontend, which renders the Markdown summary and citation details.
+8. **Correct on request.** Only after the user clicks **Generate corrected DOCX**, a separate correction model receives the original parsed text, summary, and findings. It may propose exact-quote replacements only; mismatched/ambiguous quotes are skipped. The resulting DOCX is a draft and may not preserve the original layout or visuals.
 
 The model steps are sequential: the claims agent receives the tone result, and the summarizer receives both earlier agent results. Model calls are independent per role even when all roles point to the same Gemini model.
 
@@ -96,7 +98,7 @@ Run each service in a separate terminal from the repository root unless a step s
 
 ### 1. Configure environment
 
-Create the backend environment file and fill in all three agent keys:
+Create the backend environment file and fill in the API keys for the agents you enable:
 
 ```bash
 cp backend/.env.example backend/.env
@@ -108,9 +110,10 @@ In `backend/.env`, set a valid value for each of:
 TRUELINE_TONE_API_KEY=your_tone_agent_gemini_key
 TRUELINE_CLAIMS_API_KEY=your_claims_agent_gemini_key
 TRUELINE_SUMMARY_API_KEY=your_summary_agent_gemini_key
+TRUELINE_CORRECTION_API_KEY=your_correction_agent_gemini_key
 ```
 
-The template configures each role to use Google's OpenAI-compatible API endpoint and the same baseline model, `gemini-3.1-flash-lite`. Provider, base URL, model, timeout, and key remain separate variables for each role. Keep `backend/.env` private; it is ignored by Git. The Gemini-compatible endpoint format is described in [Google's Gemini API documentation](https://ai.google.dev/gemini-api/docs/openai).
+The template configures each role to use Google's OpenAI-compatible API endpoint and the same baseline model, `gemini-3.1-flash-lite`. Provider, base URL, model, timeout, and key remain separate variables for each role. The correction model is called only when a user requests a corrected draft. Keep `backend/.env` private; it is ignored by Git. The Gemini-compatible endpoint format is described in [Google's Gemini API documentation](https://ai.google.dev/gemini-api/docs/openai).
 
 `frontend/.env.example` sets `VITE_API_BASE_URL=http://localhost:3001`, which matches the backend default. Copy it only if you need to override that URL:
 
@@ -207,6 +210,7 @@ Each graph role has an independent environment namespace. The checked-in `.env.e
 | Tone | `TRUELINE_TONE_API_KEY` | Tone of voice, brand guidelines, glossary |
 | Claims | `TRUELINE_CLAIMS_API_KEY` | Approved claims, product facts, brand guidelines, legal/compliance |
 | Summary | `TRUELINE_SUMMARY_API_KEY` | Receives retrieved evidence and prior agent results |
+| Correction | `TRUELINE_CORRECTION_API_KEY` | On-demand DOCX drafting from the original document and review findings |
 
 Each role also has its own `*_PROVIDER`, `*_BASE_URL`, `*_MODEL`, and `*_TIMEOUT_SECONDS` variables. All currently use Gemini through `https://generativelanguage.googleapis.com/v1beta/openai/` and `gemini-3.1-flash-lite`; each role can later be changed independently. Local Ollama is also supported per role by setting its provider to `ollama`, its OpenAI-compatible endpoint (normally `http://localhost:11434/v1`), and a model available in Ollama. The API key value for Ollama is not used as a secret. No Gemini key is sent to the browser.
 
@@ -223,6 +227,7 @@ The Express server listens on `PORT` (default `3001`) and allows the frontend or
 | `GET /api/knowledge?sessionId=...` | List indexed sources in the session. |
 | `POST /api/knowledge` | Ingest one file. Form fields include `file`, `sessionId`, `documentType`, optional `title`, optional JSON-array `ruleData`, and optional `approved`. |
 | `POST /api/review` | Review one file. Form fields include `file`, `sessionId`, and optional `channel`. |
+| `POST /api/review/correct` | Generate a DOCX draft on request. Form fields include the original `file`, `sessionId`, and `reviewData` JSON with the completed summary and findings. |
 
 The session identifier is a temporary scope token, not authentication. Every session-scoped endpoint verifies that it matches the active session and configured organization.
 
@@ -279,7 +284,7 @@ Useful module guides: [RAG workflow](rag/RAG_WORKFLOW.md), [ingestion contract](
 - **Database connection refused on port 5433:** start the database with `docker compose up -d db` from `data_ingestion/` and check `docker compose ps`.
 - **Python worker fails during startup:** activate the repository `.venv`, install both requirement files, confirm the database is reachable, and check the error printed by `npm run dev`.
 - **Model download or memory failure:** first BGE-M3 initialization downloads model weights and may need several GB of free disk and available memory. For plumbing checks only, use the fake embedder and re-upload sources in a fresh session.
-- **Gemini request fails:** make sure all three per-agent API key variables are populated and that the endpoint/model are enabled for the key.
+- **Gemini request fails:** confirm the API key is set for the failing role (tone, claims, summary, logo, or correction) and that its endpoint/model are enabled for the key.
 - **No relevant citations:** verify the source upload finished, is approved, has the right document type, and belongs to the current session. An agent should report insufficient evidence rather than fabricate support.
 - **Review gives no deterministic findings:** confirm structured rules were sent as `ruleData`, were approved, and apply to the selected channel. Natural-language rules are not converted automatically.
 
