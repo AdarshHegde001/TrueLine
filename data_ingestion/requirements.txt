@@ -1,4 +1,3 @@
 psycopg[binary]>=3.2
 pydantic>=2.6
-sentence-transformers>=3.0   # loads BAAI/bge-m3 dense 1024-d checkpoint (~2.27 GB)
 pytest>=8.0

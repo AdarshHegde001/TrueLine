@@ -9,7 +9,7 @@
     <img alt="React and Vite" src="https://img.shields.io/badge/Frontend-React%20%2B%20Vite-646CFF.svg?logo=vite&logoColor=white" />
     <img alt="RAG" src="https://img.shields.io/badge/AI-RAG-7048C8.svg" />
     <img alt="PostgreSQL and pgvector" src="https://img.shields.io/badge/Storage-PostgreSQL%20%2B%20pgvector-336791.svg?logo=postgresql&logoColor=white" />
-    <img alt="BGE-M3" src="https://img.shields.io/badge/Embeddings-BAAI%2Fbge--m3-087E6B.svg" />
+    <img alt="Gemini Embedding 2" src="https://img.shields.io/badge/Embeddings-Gemini%20Embedding%202-087E6B.svg" />
     <img alt="LangGraph" src="https://img.shields.io/badge/Orchestration-LangGraph-1C7C54.svg" />
   </p>
 </div>
@@ -20,7 +20,7 @@
 
 TrueLine is a local hackathon prototype for checking marketing and other organization-authored content against an approved knowledge library. An organization uploads reference files (brand guidance, tone guidance, approved claims, product facts, and related resources), chooses a type for each file, and then submits a document for review. The review combines deterministic checks with retrieval-augmented generation (RAG): relevant source passages are retrieved from PostgreSQL, specialized model calls assess tone and claims, and the summary model prioritizes validated findings that the backend renders as a cited Markdown report.
 
-The current baseline is a single-organization, one-active-session prototype. It is intended for local evaluation and demos, not as a production multi-tenant service.
+The current baseline is a single-organization, one-active-session prototype. The `production` branch uses Gemini Embedding 2; `main` retains the local BGE-M3 embedder. Both use 1,024-dimensional vectors and the existing PostgreSQL `vector(1024)` schema. The prototype is intended for evaluation and demos, not as a production multi-tenant service.
 
 ## At a glance
 
@@ -75,8 +75,8 @@ flowchart LR
 
 | Component | Responsibility |
 | --- | --- |
-| `frontend/` | React/Vite interface for session control, reference uploads, and document review. Summary text is rendered as GitHub-flavored Markdown. |
-| `backend/` | Express HTTP API, multipart upload validation, session-aware requests, and a long-lived Python worker bridge. Loads `backend/.env`. |
+| `frontend/` | React/Vite interface for session control, reference uploads, and document review. Docker builds the Vite app and Express serves its static files; local development can use the Vite dev server. |
+| `backend/` | Express HTTP API, production frontend hosting, multipart upload validation, session-aware requests, and a long-lived Python worker bridge. Loads `backend/.env`. |
 | `data_ingestion/` | PostgreSQL schema/migrations, source/version management, chunking, embeddings, hybrid search, and ephemeral session cleanup. |
 | `rag/parsing/` | Extracts text and location metadata from PDF, DOCX, Markdown, and plain text files. Sparse image-heavy PDF pages use adaptive Tesseract OCR. |
 | `rag/rules/` | Evaluates machine-checkable structured rules supplied with an ingested source. Natural-language extracted rules are kept in the separate evidence-linked rulebook and reviewed by specialist agents. |
@@ -101,8 +101,8 @@ Rule extraction runs once when each approved reference version is ingested. Tone
 - macOS, Linux, or Windows with Docker Desktop / Docker Engine and Docker Compose
 - Node.js and npm (use a current Node.js LTS release)
 - Python 3.11 or 3.12
-  - A Gemini API key for each enabled model role: extraction, tone, claims, summary, logo (if used), and correction (if used)
-- Sufficient disk space and memory for the BGE-M3 dense embedding model. Its dense PyTorch checkpoint is approximately 2.27 GB and is downloaded to the Hugging Face cache on first model initialization; it is not stored in this repository.
+- A Gemini Embedding API key for the production branch's embedding requests
+- Separate Gemini API keys for each enabled agent role: extraction, tone, claims, summary, logo (if used), and correction (if used)
 - Tesseract OCR with English language data for scanned PDF pages. PyMuPDF and its Python package do not install the Tesseract executable.
 
 The local database uses PostgreSQL 16 with the pgvector extension via the `pgvector/pgvector:pg16` container. It is exposed on host port `5433` to avoid the common local PostgreSQL port `5432`.
@@ -113,15 +113,15 @@ Run each service in a separate terminal from the repository root unless a step s
 
 ### Run the full stack with Docker Compose
 
-Docker Compose starts PostgreSQL with pgvector, the Express API and its Python worker (including Tesseract OCR), and the Vite frontend:
+Docker Compose starts PostgreSQL with pgvector and the Express/Python backend. The backend container builds and serves the React frontend from the same origin:
 
 ```bash
 docker compose up --build
 ```
 
-Open `http://localhost:5173`; the API health endpoint is `http://localhost:3001/api/health`. The first build installs the application dependencies, and the first backend startup downloads the BGE-M3 model (about 2.27 GB). The model cache and database are kept in named Docker volumes between runs. Press Ctrl+C to stop the services, then use `docker compose down` to remove the containers and network.
+Open `http://localhost:3001`; the API health endpoint is `http://localhost:3001/api/health`. The first build installs the application dependencies. On `production`, embeddings are generated by Gemini and no local embedding checkpoint is downloaded. The local database is kept in a named Docker volume between runs. Press Ctrl+C to stop the services, then use `docker compose down` to remove the containers and network. Render deployment uses the managed Postgres service declared in `render.yaml`, not this local Compose database.
 
-To enable model-backed reviews, copy `backend/.env.example` to `backend/.env` and add the Gemini API keys for the agents you use before starting Compose. The app can start without keys, but model calls will fail until the relevant keys are configured. Docker Compose reads this optional file automatically.
+Before starting Compose, copy `backend/.env.example` to `backend/.env` and set `GEMINI_EMBEDDING_API_KEY`. Agent keys are needed for the model roles you use. Docker Compose reads this optional file automatically; without the embedding key, the Python worker cannot start in Gemini mode.
 
 ### 1. Configure environment
 
@@ -190,7 +190,7 @@ npm install
 npm run dev
 ```
 
-Wait for the `Python RAG worker ready (bge-m3)` message. The first startup initializes the model and downloads its dense checkpoint if it is not already cached. The API is available at `http://localhost:3001`; `http://localhost:3001/api/health` reports worker, embedding, and non-secret agent configuration status.
+Wait for the `Python RAG worker ready (gemini)` message. The worker checks the Gemini embedding configuration and uses the API key from `backend/.env` when indexing or retrieving. The API is available at `http://localhost:3001`; `http://localhost:3001/api/health` reports worker, embedding, and non-secret agent configuration status.
 
 ### 5. Start the frontend
 
@@ -216,19 +216,29 @@ The API accepts one file per `/api/knowledge` or `/api/review` request (25 MiB m
 
 ## Embedding and search configuration
 
-The baseline uses **BAAI/bge-m3** through `sentence-transformers`, configured in `backend/.env`:
+The `production` branch uses **Gemini Embedding 2** through Google's REST embedding API, configured in `backend/.env`:
 
 ```dotenv
-INGESTION_EMBEDDER=bge-m3
-EMBEDDING_MODEL=BAAI/bge-m3
-EMBEDDING_REVISION=main
+INGESTION_EMBEDDER=gemini
+GEMINI_EMBEDDING_MODEL=gemini-embedding-2
+GEMINI_EMBEDDING_API_KEY=your_gemini_api_key
 ```
 
-BGE-M3 produces normalized dense embeddings of **1,024 dimensions**, matching the database's `vector(1024)` column. The embedding text includes the selected document type so retrieval can use that metadata to distinguish tone guidance, claims, facts, and other sources. The same model and revision must be used to embed sources and search queries. The code records an embedding-model tag and ignores vectors with a different tag during search.
+Gemini Embedding 2 is configured to return **1,024 dimensions**, matching the existing database `vector(1024)` column; no schema migration is required. Document and query text use the model's asymmetric search formatting. The stored embedding tag distinguishes the model and input-format version, and retrieval only compares vectors with the matching tag. The API key is sent only by the backend to Google and must never be placed in frontend environment variables.
+
+The `main` branch retains **BAAI/bge-m3**. For optional local BGE-M3 use on `production`, install `pip install -r data_ingestion/requirements-bge.txt`, then set `INGESTION_EMBEDDER=bge-m3`, `EMBEDDING_MODEL=BAAI/bge-m3`, and `EMBEDDING_REVISION=main`. BGE-M3 requires a large model download and PyTorch, so it is intentionally excluded from the production Docker image.
 
 Search combines dense vector distance and PostgreSQL full-text ranking, fused with Reciprocal Rank Fusion. Agent-specific document-type filters focus the tone and claims searches. The current migration does not enable an approximate-nearest-neighbor index; vector search scans the eligible rows, which is suitable for this small prototype dataset but should be revisited as the corpus grows.
 
-For a lightweight plumbing-only local run, `INGESTION_EMBEDDER=fake` selects a deterministic fake embedder instead. Fake vectors are **not semantic embeddings**, must not be used to assess retrieval quality, and are incompatible with BGE-M3 vectors. Start a fresh session and re-upload the sources after changing the embedder; the prototype session reset clears the old index.
+For a lightweight plumbing-only local run, `INGESTION_EMBEDDER=fake` selects a deterministic fake embedder instead. Fake vectors are **not semantic embeddings** and must not be used to assess retrieval quality. Embeddings from different providers or model versions are incompatible: start a fresh session and re-upload sources after changing the provider. The prototype session reset clears the old index.
+
+### Deploy on Render
+
+Use Render's Blueprint flow with `render.yaml` on the `production` branch. It creates one Docker web service from the repository-root context and `backend/Dockerfile`; that image builds the Vite frontend and Express serves its files and API from the same origin. The Blueprint also creates managed PostgreSQL 16 with pgvector enabled by the existing migration, plus a persistent disk for extracted reference images. The Python worker applies database migrations when it starts. The Blueprint wires `DATABASE_URL` to Render Postgres; you do not need to configure the Compose `db` hostname in Render. It creates a new empty database: local Compose data is not copied, so upload the approved reference resources again after deployment.
+
+The Blueprint prompts for the unsynced API key variables when you first create it. Enter the Gemini embedding key as `GEMINI_EMBEDDING_API_KEY`, then enter the agent keys under `TRUELINE_EXTRACTION_API_KEY`, `TRUELINE_TONE_API_KEY`, `TRUELINE_CLAIMS_API_KEY`, `TRUELINE_SUMMARY_API_KEY`, `TRUELINE_CORRECTION_API_KEY`, and `TRUELINE_LOGO_API_KEY`. These are backend environment secrets; the Python worker inherits them from Express, and no key belongs in the frontend. If the Render service already exists, add the same key/value pairs under **trueline-api → Environment** in the Render Dashboard. No `VITE_API_BASE_URL` or `FRONTEND_ORIGIN` is needed for the production same-origin setup. Local Docker Compose continues to use its local Postgres container.
+
+The Blueprint uses the paid 2 GB backend plan and the smallest paid Postgres plan. At current listed pricing, that is about $25/month for the backend plus $6/month for Postgres, before storage/bandwidth or Gemini API usage; the 1 GB asset disk adds about $0.25/month. Check Render's current [pricing](https://render.com/pricing) before deploying, since rates and account credits can change. The 15-minute spin-down behavior applies to free web services; this paid backend stays available. The persistent disk protects extracted reference assets across restarts, while session cleanup still removes them at session end.
 
 ## Agent API configuration
 
@@ -247,7 +257,7 @@ Each role also has its own `*_PROVIDER`, `*_BASE_URL`, `*_MODEL`, and `*_TIMEOUT
 
 ## HTTP API
 
-The Express server listens on `PORT` (default `3001`) and allows the frontend origin in `FRONTEND_ORIGIN` (default `http://localhost:5173`). Upload endpoints use `multipart/form-data`.
+The Express server listens on `PORT` (default `3001`). In production it serves both the frontend and `/api/*` routes from one origin; during local Vite development, it allows `http://localhost:5173` via CORS. Upload endpoints use `multipart/form-data`.
 
 | Method and path | Purpose |
 | --- | --- |
@@ -314,7 +324,7 @@ Useful module guides: [RAG workflow](rag/RAG_WORKFLOW.md), [ingestion contract](
 
 - **Database connection refused on port 5433:** start the database with `docker compose up -d db` from `data_ingestion/` and check `docker compose ps`.
 - **Python worker fails during startup:** activate the repository `.venv`, install both requirement files, confirm the database is reachable, and check the error printed by `npm run dev`.
-- **Model download or memory failure:** first BGE-M3 initialization downloads model weights and may need several GB of free disk and available memory. For plumbing checks only, use the fake embedder and re-upload sources in a fresh session.
+- **Gemini embedding configuration/API errors:** verify `INGESTION_EMBEDDER=gemini`, `GEMINI_EMBEDDING_MODEL=gemini-embedding-2`, the embedding key, and network access. For a local BGE-M3 run, install the optional requirements file and re-upload sources in a fresh session after switching providers.
 - **Gemini request fails:** confirm the API key is set for the failing role (tone, claims, summary, logo, or correction) and that its endpoint/model are enabled for the key.
 - **No relevant citations:** verify the source upload finished, is approved, has the right document type, and belongs to the current session. An agent should report insufficient evidence rather than fabricate support.
 - **Review gives no deterministic findings:** confirm structured rules were sent as `ruleData`, were approved, and apply to the selected channel. Natural-language rules are not converted automatically.
@@ -329,7 +339,7 @@ Start the backend and frontend as described above. Optional ingestion tests use 
 - OCR quality depends on scan quality and the locally installed Tesseract language data. Logo screening compares extracted images with uploaded references and may miss logos that are substantially altered or embedded as page-level vector artwork.
 - Model-extracted rulebooks depend on the extraction model and preserve exact supporting quotations; they do not create executable deterministic rules or a dedicated structured-rule editor in the UI.
 - Agent outputs can be incomplete or wrong; a human must verify the evidence and conclusions.
-- BGE-M3 uses a substantial local model download, and the current exact vector scan is intended for a small dataset.
+- Gemini embeddings require outbound API access; the current exact vector scan is intended for a small dataset.
 - Model choice and endpoint are configured by a trusted local operator in `.env`; the UI does not accept user-supplied model endpoints or API keys.
 
 ## License

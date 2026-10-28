@@ -1,6 +1,14 @@
+FROM node:22-alpine AS frontend-build
+WORKDIR /frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend ./
+RUN npm run build
+
 FROM node:22-bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \
+    NODE_ENV=production \
     PIP_NO_CACHE_DIR=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
@@ -25,12 +33,12 @@ ENV PATH="/opt/venv/bin:${PATH}"
 COPY rag/requirements.txt /tmp/rag-requirements.txt
 COPY data_ingestion/requirements.txt /tmp/ingestion-requirements.txt
 RUN pip install --upgrade pip \
-    && pip install torch --index-url https://download.pytorch.org/whl/cpu \
     && pip install -r /tmp/rag-requirements.txt -r /tmp/ingestion-requirements.txt
 
 COPY backend ./backend
 COPY rag ./rag
 COPY data_ingestion ./data_ingestion
+COPY --from=frontend-build /frontend/dist ./frontend/dist
 
 EXPOSE 3001
 CMD ["npm", "--prefix", "backend", "start"]

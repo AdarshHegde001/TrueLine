@@ -30,12 +30,10 @@ services:
       FRONTEND_ORIGIN: http://localhost:5173
       DATABASE_URL: postgresql://trueline:trueline@db:5432/trueline
       PYTHON_BIN: /opt/venv/bin/python
-      HF_HOME: /model-cache
       TRUELINE_ASSET_DIR: /app/data_ingestion/extracted_assets
     ports:
       - "3001:3001"
     volumes:
-      - hf_cache:/model-cache
       - extracted_assets:/app/data_ingestion/extracted_assets
     depends_on:
       db:
@@ -48,20 +46,6 @@ services:
       start_period: 10m
     restart: unless-stopped
 
-  frontend:
-    build:
-      context: .
-      dockerfile: frontend/Dockerfile
-    environment:
-      VITE_API_BASE_URL: http://localhost:3001
-    ports:
-      - "5173:5173"
-    depends_on:
-      backend:
-        condition: service_started
-    restart: unless-stopped
-
 volumes:
   trueline_pg:
-  hf_cache:
   extracted_assets:

@@ -23,10 +23,17 @@ const documentTypes = new Set([
   'glossary', 'asset_rules', 'legal_compliance', 'other_reference',
 ]);
 
-app.use(cors({
-  origin: process.env.FRONTEND_ORIGIN || 'http://localhost:5173',
-  exposedHeaders: ['X-Trueline-Edits-Applied', 'X-Trueline-Unresolved-Count', 'X-Trueline-Format-Note'],
-}));
+if (process.env.FRONTEND_ORIGIN) {
+  app.use(cors({
+    origin: process.env.FRONTEND_ORIGIN,
+    exposedHeaders: ['X-Trueline-Edits-Applied', 'X-Trueline-Unresolved-Count', 'X-Trueline-Format-Note'],
+  }));
+} else if (process.env.NODE_ENV !== 'production') {
+  app.use(cors({
+    origin: 'http://localhost:5173',
+    exposedHeaders: ['X-Trueline-Edits-Applied', 'X-Trueline-Unresolved-Count', 'X-Trueline-Format-Note'],
+  }));
+}
 app.use(express.json({ limit: '1mb' }));
 
 const upload = multer({
@@ -316,6 +323,19 @@ app.post('/api/review/correct', upload.single('file'), async (req, res, next) =>
     res.send(Buffer.from(result.fileBase64, 'base64'));
   } catch (error) { next(error); }
 });
+
+const frontendDist = path.join(projectRoot, 'frontend', 'dist');
+const frontendIndex = path.join(frontendDist, 'index.html');
+if (existsSync(frontendIndex)) {
+  app.use(express.static(frontendDist, { index: false }));
+  app.use((req, res, next) => {
+    if (req.path === '/api' || req.path.startsWith('/api/')) {
+      return res.status(404).json({ error: 'API route not found.' });
+    }
+    if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+    return res.sendFile(frontendIndex);
+  });
+}
 
 app.use((error, _req, res, _next) => {
   const status = error.status || (error instanceof multer.MulterError ? 400 : 500);

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from . import db, ingest
 from .config import get_settings
-from .embeddings import BGEM3Embedder, FakeEmbedder
+from .embeddings import create_embedder
 from .models import KnowledgeSearchRequest, SourceCreate
 from .search import KnowledgeService
 
@@ -30,7 +30,7 @@ def main() -> None:
     if a.cmd == "migrate":
         print("applied:", db.migrate(conn))
         return
-    emb = FakeEmbedder() if a.fake else BGEM3Embedder(s)
+    emb = create_embedder("fake" if a.fake else None, s)
     if a.cmd == "seed":
         db.migrate(conn)
         for rec in json.loads(SEED.read_text()):

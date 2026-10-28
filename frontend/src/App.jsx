@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
-const API = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
+const API = import.meta.env.VITE_API_BASE_URL ?? (import.meta.env.DEV ? 'http://localhost:3001' : '');
 const defaultDocumentType = 'brand_guidelines';
 const documentTypeLabels = {
   brand_guidelines: 'Brand guidelines',

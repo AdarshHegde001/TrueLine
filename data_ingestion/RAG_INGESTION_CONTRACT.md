@@ -1,5 +1,7 @@
 # Data Ingestion ↔ RAG Contract
 
+> **Production-branch implementation note:** This contract records the original BGE-M3 decision used by `main`. The `production` branch uses Gemini Embedding 2 with explicitly requested 1,024-dimensional vectors to retain the same PostgreSQL `vector(1024)` schema. Its embeddings have a distinct model/input-format tag; do not mix them with BGE-M3 or re-use old vectors. Set `GEMINI_EMBEDDING_API_KEY` for production. The original BGE-M3 requirements remain available for local runs through `requirements-bge.txt`.
+
 **Status: proposed; confirm with both workstreams before treating it as a fixed API.**
 
 This document defines the handoff between the data ingestion workstream and the RAG/review workstream. The ingestion service owns approved brand knowledge and prepares its search index. The RAG service owns issuing review-time searches, using retrieved knowledge, and producing evidence-backed findings. The frontend should not access the index directly.

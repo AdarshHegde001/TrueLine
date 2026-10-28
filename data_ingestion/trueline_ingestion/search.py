@@ -59,7 +59,8 @@ class KnowledgeService:
             if len(req.document_types) == 1:
                 query_type = req.document_types[0].replace("_", " ")
                 query_text = f"Document type: {query_type}\n{req.query}"
-            qvec = self.embedder.embed([query_text])[0]
+            embed_query = getattr(self.embedder, "embed_query", None)
+            qvec = embed_query(query_text) if embed_query else self.embedder.embed([query_text])[0]
             if len(qvec) != self.s.embedding_dim:
                 raise ValueError(f"query embedding dim {len(qvec)} != {self.s.embedding_dim}")
         except Exception as e:
@@ -133,8 +134,8 @@ def search_knowledge(request: KnowledgeSearchRequest) -> dict:
     Caller (backend) must already have authorised access to request.brand_id."""
     global _default
     if _default is None:
-        from .embeddings import BGEM3Embedder
-        _default = KnowledgeService(BGEM3Embedder())
+        from .embeddings import create_embedder
+        _default = KnowledgeService(create_embedder())
     return _default.search(request).model_dump()
 
 

@@ -34,7 +34,7 @@ def main() -> None:
             from trueline_ingestion import db, ingest
             from trueline_ingestion import logos
             from trueline_ingestion.config import get_settings
-            from trueline_ingestion.embeddings import BGEM3Embedder, FakeEmbedder
+            from trueline_ingestion.embeddings import create_embedder
             from trueline_ingestion.models import SourceCreate
             from trueline_ingestion.search import KnowledgeService
             from trueline_ingestion import sessions
@@ -46,8 +46,8 @@ def main() -> None:
             finally:
                 db_connection.close()
 
-            embedder_mode = os.environ.get("INGESTION_EMBEDDER", "bge-m3").lower()
-            embedder = FakeEmbedder() if embedder_mode == "fake" else BGEM3Embedder(settings)
+            embedder_mode = os.environ.get("INGESTION_EMBEDDER", "gemini").lower()
+            embedder = create_embedder(embedder_mode, settings)
             knowledge = KnowledgeService(embedder, settings)
 
         emit({"type": "ready", "embedder": embedder_mode, "agentModels": model_configuration()})

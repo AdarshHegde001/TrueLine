@@ -1,0 +1,3 @@
+# Optional local-only BGE-M3 provider. The production Gemini path needs no ML framework.
+-r requirements.txt
+sentence-transformers>=3.0

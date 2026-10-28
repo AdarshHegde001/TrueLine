@@ -220,10 +220,12 @@ def index_version(conn, embedder: Embedder, version_id: str,
     conn.commit()  # close the read transaction; writes below are their own transaction
     try:
         # Purpose informs the vector without changing the exact cited passage.
-        vecs = embedder.embed([
+        texts_to_embed = [
             f"Document type: {r['document_type'].replace('_', ' ')}\n{r['chunk_text']}"
             for r in rows
-        ])
+        ]
+        embed_documents = getattr(embedder, "embed_documents", embedder.embed)
+        vecs = embed_documents(texts_to_embed)
         if len(vecs) != len(ids) or any(len(x) != s.embedding_dim for x in vecs):
             raise IndexingError(f"embedder returned wrong count/dimension (expected {s.embedding_dim})")
     except Exception as e:  # model missing/OOM/etc. => visible failed state, not searchable

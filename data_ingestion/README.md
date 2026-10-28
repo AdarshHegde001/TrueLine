@@ -1,7 +1,7 @@
 # data_ingestion: approved-knowledge ingestion + retrieval
 
 Implements `RAG_INGESTION_CONTRACT.md`: versioned guideline / approved-fact sources in PostgreSQL,
-BGE-M3 dense vectors (pgvector, `vector(1024)`), Postgres full-text search, brand-scoped hybrid
+Gemini Embedding 2 dense vectors on the production branch (pgvector, `vector(1024)`), Postgres full-text search, brand-scoped hybrid
 retrieval fused with Reciprocal Rank Fusion.
 
 ## Run it (5 steps)
@@ -10,8 +10,10 @@ cd data_ingestion
 docker compose up -d db                                   # Postgres 16 + pgvector
 pip install -r requirements.txt
 export DATABASE_URL=postgresql://trueline:trueline@localhost:5433/trueline
+export INGESTION_EMBEDDER=gemini
+export GEMINI_EMBEDDING_API_KEY=your_gemini_api_key
 python -m trueline_ingestion migrate
-python -m trueline_ingestion seed                         # downloads BGE-M3 dense checkpoint (~2.27 GB) first time
+python -m trueline_ingestion seed                         # embeds sources with Gemini Embedding 2
 python -m trueline_ingestion search --brand brand_lumina --query "clinically proven to remove all wrinkles"
 ```
 Add `--fake` to any command to skip the model download (test-only hash embedder; its tag says FAKE).
@@ -34,7 +36,7 @@ the RAG adapter validates that mapping at the boundary.
 Each uploaded source also carries an organization-selected `document_type`:
 `brand_guidelines`, `tone_of_voice`, `approved_claims`, `product_facts`,
 `glossary`, `asset_rules`, `legal_compliance`, or `other_reference`. It is stored on the immutable version and every
-chunk, prefixed into BGE-M3 embedding input, and returned in each retrieval result. Set
+chunk, included in the embedding input, and returned in each retrieval result. On production, Gemini uses its asymmetric search document/query format; on `main`, BGE-M3 embeds the prefixed chunk directly. Set
 `document_types=("tone_of_voice",)` on `KnowledgeSearchRequest` to scope retrieval to a
 specialist agent's evidence; an empty tuple searches every type.
 The embedding-input format is versioned in the stored embedding tag. After upgrading an existing
@@ -59,4 +61,6 @@ Empty result = valid success. DB/embedding failure = `SearchServiceError`, never
 
 ## Status (measured, not assumed)
 - Tested: 17 pytest cases on PostgreSQL 16 + pgvector with the FAKE embedder (plumbing, scoping, versioning, failures).
-- NOT yet tested: real BAAI/bge-m3 inference, retrieval quality, `EMBEDDING_REVISION` is still `main` (pin to a commit hash), HTTP/auth layer, docker compose.
+- NOT yet tested: live Gemini embedding inference and retrieval quality, optional BGE-M3 inference, HTTP/auth layer, docker compose.
+
+The `main` branch remains configured for BGE-M3. To run BGE-M3 locally on this branch, install `pip install -r requirements-bge.txt` and set `INGESTION_EMBEDDER=bge-m3`, `EMBEDDING_MODEL=BAAI/bge-m3`, and `EMBEDDING_REVISION=main`. Switching embedding providers requires reindexing/re-uploading sources; vectors from different models must not be mixed.
