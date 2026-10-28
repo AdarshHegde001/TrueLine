@@ -58,11 +58,15 @@ class PythonWorker {
       cwd: projectRoot,
       env: {
         ...process.env,
+        PYTHONIOENCODING: 'utf-8',
+        PYTHONUTF8: '1',
         PYTHONPATH: [projectRoot, path.join(projectRoot, 'data_ingestion'), process.env.PYTHONPATH]
           .filter(Boolean).join(path.delimiter),
       },
       stdio: ['pipe', 'pipe', 'inherit'],
     });
+    // Child-process streams use UTF-8 on every supported platform.
+    this.#child.stdout.setEncoding('utf8');
     const lines = readline.createInterface({ input: this.#child.stdout });
     lines.on('line', (line) => this.#onLine(line));
     this.#child.on('error', (error) => this.#failAll(error));
@@ -101,7 +105,7 @@ class PythonWorker {
     const id = crypto.randomUUID();
     return new Promise((resolve, reject) => {
       this.#pending.set(id, { resolve, reject });
-      this.#child.stdin.write(`${JSON.stringify({ id, operation, ...payload })}\n`, (error) => {
+      this.#child.stdin.write(`${JSON.stringify({ id, operation, ...payload })}\n`, 'utf8', (error) => {
         if (error) {
           this.#pending.delete(id);
           reject(error);

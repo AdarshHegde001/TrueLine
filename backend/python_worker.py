@@ -17,11 +17,17 @@ sys.path.insert(0, str(ROOT / "data_ingestion"))
 
 
 def emit(value: dict) -> None:
-    sys.stdout.write(json.dumps(value, ensure_ascii=False, default=str) + "\n")
+    # The Node bridge consumes a UTF-8 JSON-lines protocol. Escaping non-ASCII
+    # also makes each response safe if a platform pipe ignores the encoding hint.
+    sys.stdout.write(json.dumps(value, ensure_ascii=True, default=str) + "\n")
     sys.stdout.flush()
 
 
 def main() -> None:
+    # Do not inherit a host-specific console code page for the worker protocol.
+    for stream in (sys.stdin, sys.stdout):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
     try:
         # Keep library/model diagnostics away from the JSON-lines protocol.
         with contextlib.redirect_stdout(sys.stderr):
