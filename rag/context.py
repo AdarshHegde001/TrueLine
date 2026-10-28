@@ -59,7 +59,7 @@ def build_review_context(
     *,
     brand_id: str,
     channel: str | None = None,
-    max_chars: int = 80_000,
+    max_chars: int = 120_000,
     retrieval_status: str = "complete",
     retrieval_error: str | None = None,
 ) -> ReviewContext:

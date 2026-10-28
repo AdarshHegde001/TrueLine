@@ -35,7 +35,7 @@ def prepare_review(
     channel: str | None,
     retriever: KnowledgeRetriever,
     top_k: int = 8,
-    max_context_chars: int = 80_000,
+    max_context_chars: int = 120_000,
 ) -> PreparedReview:
     """Run parsing-adjacent deterministic checks and retrieval, then assemble AI context.
 

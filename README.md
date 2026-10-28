@@ -18,7 +18,7 @@
 
 ## What TrueLine does
 
-TrueLine is a local hackathon prototype for checking marketing and other organization-authored content against an approved knowledge library. An organization uploads reference files (brand guidance, tone guidance, approved claims, product facts, and related resources), chooses a type for each file, and then submits a document for review. The review combines deterministic checks with retrieval-augmented generation (RAG): relevant source passages are retrieved from PostgreSQL, specialized model calls assess tone and claims, and a final model produces a Markdown summary with evidence citations.
+TrueLine is a local hackathon prototype for checking marketing and other organization-authored content against an approved knowledge library. An organization uploads reference files (brand guidance, tone guidance, approved claims, product facts, and related resources), chooses a type for each file, and then submits a document for review. The review combines deterministic checks with retrieval-augmented generation (RAG): relevant source passages are retrieved from PostgreSQL, specialized model calls assess tone and claims, and the summary model prioritizes validated findings that the backend renders as a cited Markdown report.
 
 The current baseline is a single-organization, one-active-session prototype. It is intended for local evaluation and demos, not as a production multi-tenant service.
 
@@ -60,7 +60,7 @@ flowchart LR
   CLAIMS --> BUF
   DET --> BUF
   LOGO --> BUF
-  BUF --> SUM[Summary agent: validated findings only]
+  BUF --> SUM[Summary agent: prioritizes validated findings]
   SUM -. User requests correction .-> CORRECT[Correction agent]
   CORRECT --> DOCX[Corrected DOCX]
   EXTRACT -. Gemini API .-> MODEL[Gemini OpenAI-compatible endpoint]
@@ -81,16 +81,16 @@ flowchart LR
 | `rag/parsing/` | Extracts text and location metadata from PDF, DOCX, Markdown, and plain text files. Sparse image-heavy PDF pages use adaptive Tesseract OCR. |
 | `rag/rules/` | Evaluates machine-checkable structured rules supplied with an ingested source. Natural-language extracted rules are kept in the separate evidence-linked rulebook and reviewed by specialist agents. |
 | `rag/retrieval/` | Adapts the ingestion search interface and retrieves evidence for review passages while preserving source and location information. |
-| `rag/agentic/` | LangGraph rule extraction, tone, claims, logo comparison, and summary nodes, plus the on-demand correction agent; each model role has its own provider, model, endpoint, key, and timeout settings. |
+| `rag/agentic/` | Ingestion-time rulebook extraction, LangGraph tone/claims/logo/summary review, and the on-demand correction agent; each model role has its own provider, model, endpoint, key, and timeout settings. |
 
 ### Review workflow
 
-1. **Ingest references.** Approved references use the existing extraction and OCR pipeline. The extraction agent records explicit rules with exact quotations, source version, chunk, and page provenance; original passages continue through chunking and embedding. Extraction failures are reported without blocking source indexing.
+1. **Ingest references.** Approved references use the existing parsing and OCR pipeline. The extraction agent records explicit rules and facts—including every explicitly stated product price (regular/list, sale, promotional, and per-unit)—with exact quotations, source version, chunk, and page provenance. Prices retain the exact product name, amount, currency, conditions, quantity, and unit; missing values are not inferred. Original passages also continue through chunking and embedding. A single source over 80,000 parsed characters is not sent to rule extraction; its extraction status is marked insufficient, but indexing can continue.
 2. **Parse the draft.** The uploaded review file is decoded and parsed into text segments and source locations.
 3. **Check deterministic rules.** The backend loads approved machine-checkable rules for the active session and requested channel, then runs terminology and required-text checks.
-4. **Retrieve and investigate.** Parsed passages get an initial hybrid retrieval snapshot. Tone and Claims receive the full review text, applicable active-version rulebook entries, deterministic results, and this snapshot. Each can request at most three targeted searches, with up to five results each in its allowed document types, then reassess once. Missing evidence is not treated as proof of falsity.
-5. **Validate and consolidate.** Exact review spans and source citations are checked against approved current-session evidence. Deterministic and specialist findings enter a per-review in-memory buffer, where exact duplicates are merged.
-6. **Summarize.** The summary model can prioritize IDs from the validated buffer only. It cannot add, reclassify, or remove findings; the application renders the report from the buffer. Human review remains required.
+4. **Retrieve and investigate.** Parsed passages get an initial hybrid retrieval snapshot. Tone and Claims receive the full review text, applicable active-version rulebook entries, deterministic results, and this snapshot. Claims also compares explicit draft prices, currencies, and other supported exact facts against extracted product facts; recognized price formats are normalized for comparison without treating different currencies as equal. Each agent can request at most three targeted searches, with up to five results each in its allowed document types, then reassess once. Missing evidence is not treated as proof of falsity.
+5. **Validate and consolidate.** Exact review spans and source citations are checked against approved current-session evidence. Each Tone and Claims result is added to its own findings buffer with an exact-duplicate check; duplicate entries merge their validated citations. Distinct findings on the same sentence remain separate. Deterministic and specialist findings are then deduplicated in the per-review summary buffer.
+6. **Summarize.** The summary model receives only the validated, deduplicated findings and returns an ordering hint using existing finding IDs. It is instructed not to select an issue more than once. It cannot add or reclassify findings; the application renders the report from the validated buffer. Human review remains required.
 7. **Render.** The API returns structured results and evidence to the frontend, which renders the Markdown report and citations.
 8. **Correct on request.** Only after the user clicks **Generate corrected DOCX**, a separate correction model receives the original parsed text, active extracted rules, and validated findings. It may propose exact-quote replacements only; mismatched/ambiguous quotes are skipped. The resulting DOCX is a draft and may not preserve the original layout or visuals.
 
@@ -101,7 +101,7 @@ Rule extraction runs once when each approved reference version is ingested. Tone
 - macOS, Linux, or Windows with Docker Desktop / Docker Engine and Docker Compose
 - Node.js and npm (use a current Node.js LTS release)
 - Python 3.11 or 3.12
-  - A Gemini API key for each configured agent environment variable, including the logo agent when visual review is enabled
+  - A Gemini API key for each enabled model role: extraction, tone, claims, summary, logo (if used), and correction (if used)
 - Sufficient disk space and memory for the BGE-M3 dense embedding model. Its dense PyTorch checkpoint is approximately 2.27 GB and is downloaded to the Hugging Face cache on first model initialization; it is not stored in this repository.
 - Tesseract OCR with English language data for scanned PDF pages. PyMuPDF and its Python package do not install the Tesseract executable.
 
@@ -135,8 +135,10 @@ In `backend/.env`, set a valid value for each of:
 
 ```dotenv
 TRUELINE_TONE_API_KEY=your_tone_agent_gemini_key
+TRUELINE_EXTRACTION_API_KEY=your_extraction_agent_gemini_key
 TRUELINE_CLAIMS_API_KEY=your_claims_agent_gemini_key
 TRUELINE_SUMMARY_API_KEY=your_summary_agent_gemini_key
+TRUELINE_LOGO_API_KEY=your_logo_agent_gemini_key
 TRUELINE_CORRECTION_API_KEY=your_correction_agent_gemini_key
 ```
 
@@ -163,7 +165,7 @@ pip install -r rag/requirements.txt -r data_ingestion/requirements.txt
 
 On Windows PowerShell, activate with `.venv\Scripts\Activate.ps1`. The backend automatically uses this repository `.venv` if present. Otherwise, set `PYTHON_BIN` in `backend/.env` to the Python executable containing these dependencies.
 
-Install Tesseract separately: on macOS use `brew install tesseract`; on Debian/Ubuntu use `sudo apt-get install tesseract-ocr tesseract-ocr-eng`; on Windows install the Tesseract OCR application and ensure its executable is on `PATH`. The backend host/container must have Tesseract available to the Python worker. This repository runs PostgreSQL in Docker but does not define a backend container, so install Tesseract on the machine or deployment image that runs `backend/python_worker.py`. Digital PDF text extraction and DOCX/TXT/Markdown parsing work without Tesseract.
+For a non-Docker local run, install Tesseract separately: on macOS use `brew install tesseract`; on Debian/Ubuntu use `sudo apt-get install tesseract-ocr tesseract-ocr-eng`; on Windows install the Tesseract OCR application and ensure its executable is on `PATH`. The Python worker needs the Tesseract executable available. The Docker Compose backend image includes Tesseract. Digital PDF text extraction and DOCX/TXT/Markdown parsing work without Tesseract.
 
 The PDF parser OCRs a page only when native text is sparse and embedded images occupy at least 25% of the page. Tune `TRUELINE_OCR_MIN_CHARS` (default `40`), `TRUELINE_OCR_IMAGE_COVERAGE` (default `0.25`), and `TRUELINE_OCR_DPI` (default `200`, bounded to 120–300) in `backend/.env` if documents need different thresholds. OCR warnings are returned with parsed review documents and reference ingestion results. Reference PDF images are saved under `data_ingestion/extracted_assets/` (or `TRUELINE_ASSET_DIR`) with generated names and page/hash metadata stored on the source version; session reset/end removes these local artifacts. They are private local files with no public serving endpoint. A deployment with ephemeral disk will lose them on restart, so durable object storage is a future deployment requirement. Review-document images are not saved as approved reference assets. Vector-only page graphics are not currently rendered as fallback images.
 
@@ -210,7 +212,7 @@ Open the Vite URL shown in the terminal (normally `http://localhost:5173`). The 
 4. Upload a `.txt`, `.md`, `.pdf`, or `.docx` verification document and choose a channel if relevant.
 5. Inspect the Markdown summary, deterministic findings, evidence, and citations. End the session to clear its data.
 
-The API accepts one file per `/api/knowledge` or `/api/review` request (15 MiB maximum). Review uploads also accept PNG, JPEG, and WebP images; their text is OCRed locally. Approved logo references can be uploaded separately as PNG, JPEG, or WebP (5 MiB each, up to 12 per session). References and review visuals are private, session-scoped local assets. The logo agent receives only approved logo references and standalone document images that pass local visual-hash screening against those references; OCR text alone cannot make an image eligible. Full-page renders, charts, and unrelated images are not sent to Gemini. Vector-heavy pages may be rendered for local extraction, but are excluded from logo-agent input. Set `TRUELINE_LOGO_PROVIDER`, `TRUELINE_LOGO_BASE_URL`, `TRUELINE_LOGO_API_KEY`, `TRUELINE_LOGO_MODEL`, and `TRUELINE_LOGO_TIMEOUT_SECONDS` in `backend/.env`. The Python worker applies `data_ingestion/migrations/004_logos.sql` when it starts.
+The API accepts one file per `/api/knowledge` or `/api/review` request (25 MiB maximum). Review uploads also accept PNG, JPEG, and WebP images; their text is OCRed locally. The assembled review context has a 120,000-character preflight limit; this counts serialized review text, segments, deterministic results, and retrieved evidence, and is not a model-token guarantee. The backend errors rather than silently truncating an oversized context. Approved logo references can be uploaded separately as PNG, JPEG, or WebP (5 MiB each, up to 12 per session). References and review visuals are private, session-scoped local assets. The logo agent receives only approved logo references and standalone document images that pass local visual-hash screening against those references; OCR text alone cannot make an image eligible. Full-page renders, charts, and unrelated images are not sent to Gemini. Vector-heavy pages may be rendered for local extraction, but are excluded from logo-agent input. Set `TRUELINE_LOGO_PROVIDER`, `TRUELINE_LOGO_BASE_URL`, `TRUELINE_LOGO_API_KEY`, `TRUELINE_LOGO_MODEL`, and `TRUELINE_LOGO_TIMEOUT_SECONDS` in `backend/.env`. The Python worker applies `data_ingestion/migrations/004_logos.sql` when it starts.
 
 ## Embedding and search configuration
 
@@ -230,13 +232,15 @@ For a lightweight plumbing-only local run, `INGESTION_EMBEDDER=fake` selects a d
 
 ## Agent API configuration
 
-Each graph role has an independent environment namespace. The checked-in `.env.example` sets provider, endpoint, model, and timeout individually; add a key to each variable in your private `backend/.env`:
+Each model role has an independent environment namespace. The checked-in `.env.example` sets provider, endpoint, model, and timeout individually; add a key to each enabled role in your private `backend/.env`:
 
 | Role | API key | Default retrieval focus |
 | --- | --- | --- |
+| Rule extraction | `TRUELINE_EXTRACTION_API_KEY` | Runs when an approved reference version is ingested; extracts cited rules and product facts, including prices |
 | Tone | `TRUELINE_TONE_API_KEY` | Tone of voice, brand guidelines, glossary |
-| Claims | `TRUELINE_CLAIMS_API_KEY` | Approved claims, product facts, brand guidelines, legal/compliance |
-| Summary | `TRUELINE_SUMMARY_API_KEY` | Receives retrieved evidence and prior agent results |
+| Claims | `TRUELINE_CLAIMS_API_KEY` | Approved claims, product facts (including exact price comparisons), brand guidelines, legal/compliance |
+| Summary | `TRUELINE_SUMMARY_API_KEY` | Receives validated, deduplicated findings and returns an ordering hint |
+| Logo | `TRUELINE_LOGO_API_KEY` | Visual comparison against uploaded approved logo assets |
 | Correction | `TRUELINE_CORRECTION_API_KEY` | On-demand DOCX drafting from the original document and review findings |
 
 Each role also has its own `*_PROVIDER`, `*_BASE_URL`, `*_MODEL`, and `*_TIMEOUT_SECONDS` variables. All currently use Gemini through `https://generativelanguage.googleapis.com/v1beta/openai/` and `gemini-3.1-flash-lite`; each role can later be changed independently. Local Ollama is also supported per role by setting its provider to `ollama`, its OpenAI-compatible endpoint (normally `http://localhost:11434/v1`), and a model available in Ollama. The API key value for Ollama is not used as a secret. No Gemini key is sent to the browser.

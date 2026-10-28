@@ -17,7 +17,7 @@ const app = express();
 const port = Number(process.env.PORT || 3001);
 const organizationBrandId = process.env.TRUELINE_BRAND_ID || 'brand_lumina';
 const organizationName = process.env.TRUELINE_ORGANIZATION_NAME || 'Lumina Studio';
-const maxFileBytes = 15 * 1024 * 1024;
+const maxFileBytes = 25 * 1024 * 1024;
 const documentTypes = new Set([
   'brand_guidelines', 'tone_of_voice', 'approved_claims', 'product_facts',
   'glossary', 'asset_rules', 'legal_compliance', 'other_reference',
