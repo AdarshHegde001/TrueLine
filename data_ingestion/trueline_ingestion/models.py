@@ -81,6 +81,7 @@ class SourceCreate(BaseModel):
     document_name: Optional[str] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     rule_data: list[dict[str, Any]] = Field(default_factory=list)
+    extracted_rules: list[dict[str, Any]] = Field(default_factory=list)
     approved: bool = True  # admin confirmation; False => stays pending, not searchable
 
     @field_validator("title", "text")
@@ -101,6 +102,7 @@ class SourceUpdate(BaseModel):
     document_name: Optional[str] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     rule_data: Optional[list[dict[str, Any]]] = None
+    extracted_rules: Optional[list[dict[str, Any]]] = None
     approved: bool = True
 
 
@@ -117,6 +119,7 @@ class SourceVersionRecord(BaseModel):
     version: int
     text: str
     rule_data: list[dict[str, Any]] = Field(default_factory=list)
+    extracted_rules: list[dict[str, Any]] = Field(default_factory=list)
     metadata: dict[str, Any]
     created_at: str
     updated_at: str

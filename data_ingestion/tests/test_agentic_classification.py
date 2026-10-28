@@ -268,8 +268,8 @@ def test_specialist_prompts_are_scoped_and_summary_candidates_combine_agents():
     assert "those are outside your role" in workflow.TONE_AGENT_INSTRUCTIONS
     assert "Do not assess voice, " in workflow.CLAIMS_AGENT_INSTRUCTIONS
     assert "those exclusively to the tone specialist" in workflow.CLAIMS_AGENT_INSTRUCTIONS
-    assert "only inputs are the original review document and validated" in workflow.SUMMARY_AGENT_INSTRUCTIONS
-    assert "do not receive tone-agent results" in workflow.SUMMARY_AGENT_INSTRUCTIONS
+    assert "only the supplied validated_findings buffer" in workflow.SUMMARY_AGENT_INSTRUCTIONS
+    assert "Return selected_finding_ids only" in workflow.SUMMARY_AGENT_INSTRUCTIONS
     assert "Do not create, infer, generalize" in workflow.RULE_EXTRACTION_AGENT_INSTRUCTIONS
 
     prepared = SimpleNamespace(deterministic=SimpleNamespace(findings=()))
@@ -333,7 +333,9 @@ def test_agent_failures_are_classified_and_summary_stays_within_validated_result
         raise RuntimeError("simulated model outage")
 
     monkeypatch.setattr(workflow, "_chat", fail_model)
-    result = workflow.run_agentic_review(prepared, EmptyRetriever())
+    result = workflow.run_agentic_review(
+        prepared, EmptyRetriever(), rulebook={"status": "error", "rules": [], "notes": "failed"},
+    )
 
     assert result["agentResults"]["tone"]["classification"] == "CHECK_FAILED"
     assert result["agentResults"]["claims"]["classification"] == "CHECK_FAILED"
@@ -424,7 +426,7 @@ def test_explicit_quantity_and_product_name_facts_are_structured_and_compared():
     assert all(item["citations"][0]["page"] == 2 for item in claims["findings"])
 
 
-def test_review_graph_passes_extracted_rules_to_specialists_and_only_rules_to_summary(monkeypatch):
+def test_review_graph_uses_ingestion_rulebook_and_summary_only_selects_validated_buffer(monkeypatch):
     document_text = "Nova increases customer retention by 20 percent."
     document = ParsedDocument(
         document_name="draft.txt", media_type="text/plain", text=document_text,
@@ -447,22 +449,116 @@ def test_review_graph_passes_extracted_rules_to_specialists_and_only_rules_to_su
 
     def fake_json(_chat, schema, _system, payload, images=None):
         captured[schema.__name__] = payload
-        if schema is workflow.ExtractionResult:
-            return {"status": "complete", "rules": [{"kind": "product_fact",
-                "statement": SOURCE["chunk_text"], "citations": [_citation()]}], "notes": ""}
+        if schema is workflow.ToneResult:
+            return {"status": "complete", "classification": "PASSED", "findings": [], "notes": ""}
         if schema is workflow.ClaimsResult:
             return {"status": "complete", "classification": "PASSED", "findings": [], "notes": ""}
         if schema is workflow.SummaryResult:
-            return {"status": "complete", "classification": "PASSED", "summary": "",
-                    "key_findings": [], "selected_finding_ids": [], "human_review_required": True, "findings": []}
+            return {"status": "complete", "classification": "VIOLATION", "summary": "invented",
+                    "key_findings": ["invented"], "selected_finding_ids": ["invented-id"],
+                    "human_review_required": True,
+                    "findings": [{"rule_id": "invented", "document_quote": "made up",
+                        "subject": "invented", "explanation": "invented", "citations": [_citation()]}]}
         raise AssertionError(f"Unexpected model schema: {schema.__name__}")
 
     monkeypatch.setattr(workflow, "_chat", lambda _agent: object())
     monkeypatch.setattr(workflow, "_json_result", fake_json)
-    result = workflow.run_agentic_review(prepared, Retriever())
-    assert "extracted_rules" in captured["ClaimsResult"]
+    rule = {"rule_id": "extracted_001", "kind": "product_fact",
+            "statement": SOURCE["chunk_text"], "citations": [{
+                **_citation(), "brand_id": BRAND, "source_type": "approved_fact",
+                "source_title": "Approved Product Facts", "version_number": 2,
+            }]}
+    result = workflow.run_agentic_review(
+        prepared, Retriever(), rulebook={"status": "complete", "rules": [rule]},
+    )
+    assert "session_rulebook" in captured["ClaimsResult"]
     assert "review_document" in captured["ClaimsResult"]
     summary_payload = captured["SummaryResult"]
-    assert set(summary_payload) == {"review_document", "extracted_rules"}
-    assert "tone_agent" not in summary_payload and "claims_agent" not in summary_payload
-    assert result["agentResults"]["extraction"]["rules"][0]["rule_id"] == "rule_001"
+    assert set(summary_payload) == {"validated_findings", "finding_ids"}
+    assert "invented-id" not in result["agentResults"]["summary"]["summary"]
+    assert "made up" not in result["agentResults"]["summary"]["summary"]
+    assert result["agentResults"]["extraction"]["rules"][0]["rule_id"] == "extracted_001"
+
+
+def test_agent_investigation_caps_queries_and_reassesses_with_search_results(monkeypatch):
+    from rag.retrieval.models import KnowledgeSearchResponse
+
+    requests = []
+    class Retriever:
+        def search_knowledge(self, request):
+            requests.append(request)
+            return KnowledgeSearchResponse(
+                brand_id=request.brand_id, retrieval_method="hybrid", results=(),
+            )
+
+    calls = []
+    def fake_json(_chat, schema, _system, payload, images=None):
+        calls.append(payload)
+        if len(calls) == 1:
+            return {"status": "complete", "classification": "UNVERIFIED", "findings": [],
+                    "search_queries": ["one", "two", "three", "four"]}
+        return {"status": "complete", "classification": "UNVERIFIED", "findings": [],
+                "search_queries": []}
+
+    monkeypatch.setattr(workflow, "_chat", lambda _agent: object())
+    monkeypatch.setattr(workflow, "_json_result", fake_json)
+    result, evidence, failed = workflow._run_agent_investigation(
+        agent="tone", schema=workflow.ToneResult, instructions="review",
+        payload={"review_document": {"document_text": "Draft"}},
+        retriever=Retriever(), brand_id=BRAND,
+        document_types=("tone_of_voice",),
+    )
+    assert len(requests) == workflow.MAX_AGENT_SEARCHES == 3
+    assert all(request.top_k <= workflow.AGENT_SEARCH_TOP_K for request in requests)
+    assert len(calls) == 2
+    assert calls[1]["agent_search_results"] == evidence
+    assert result["search_queries"] == []
+    assert failed is False
+
+
+def test_rulebook_citations_are_version_scoped_and_verbatim():
+    rule = {"kind": "tone_rule", "statement": "Use a calm voice.", "citations": [{
+        "brand_id": BRAND, "source_id": "source_facts", "version_id": "version_2",
+        "chunk_id": "chunk_4", "source_type": "guideline", "source_title": "Guide",
+        "version_number": 2, "quote": "Use a calm voice.", "page": 3,
+        "location": {"page": 3},
+    }]}
+    bundles = workflow._rulebook_evidence([rule], BRAND)
+    finding = {"findings": [{"document_quote": "too loud", "classification": "VIOLATION",
+        "rule_quote": "Use a calm voice.", "citations": [_citation(
+            {**SOURCE, "chunk_text": "Use a calm voice."}, "Use a calm voice.")]}]}
+    validated = workflow._normalize_tone_result(
+        finding, bundles, brand_id=BRAND, document_text="too loud",
+    )
+    assert validated["findings"][0]["classification"] == "VIOLATION"
+    assert validated["findings"][0]["citations"][0]["page"] == 3
+
+
+def test_reference_rule_extraction_keeps_only_verbatim_quotes_and_resolves_page(monkeypatch):
+    from rag.agentic.rulebook import extract_reference_rules
+
+    document = ParsedDocument(
+        document_name="guide.pdf", media_type="application/pdf",
+        text="Use a calm voice. Never promise guaranteed results.",
+        segments=(
+            ContentSegment(text="Use a calm voice.", start=0, end=17, page=1),
+            ContentSegment(text="Never promise guaranteed results.", start=18, end=51, page=2),
+        ),
+        parser="pymupdf", parser_version="2",
+    )
+    monkeypatch.setattr(workflow, "_chat", lambda _agent: object())
+    monkeypatch.setattr(workflow, "_json_result", lambda *_args, **_kwargs: {
+        "status": "complete", "notes": "",
+        "rules": [
+            {"kind": "tone_rule", "statement": "Use a calm voice.",
+             "citations": [{"quote": "Use a calm voice.", "page": 999}]},
+            {"kind": "claim_rule", "statement": "Never guarantee results.",
+             "citations": [{"quote": "Never promise guaranteed results.", "page": 999}]},
+            {"kind": "prohibition", "statement": "Invented rule.",
+             "citations": [{"quote": "This quote is absent.", "page": 1}]},
+        ],
+    })
+
+    result = extract_reference_rules(document)
+    assert len(result["rules"]) == 2
+    assert [rule["citations"][0]["page"] for rule in result["rules"]] == [1, 2]

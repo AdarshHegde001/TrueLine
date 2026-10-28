@@ -41,8 +41,9 @@ def create_source(conn, embedder: Embedder, payload: SourceCreate,
             conn, embedder, s, source_id=source_id, brand_id=payload.brand_id, number=1,
             text=payload.text, document_id=payload.document_id,
             document_name=payload.document_name, metadata=payload.metadata,
-            document_type=payload.document_type,
-            rule_data=payload.rule_data, approved=payload.approved, title=payload.title,
+            document_type=payload.document_type, source_type=payload.source_type,
+            rule_data=payload.rule_data, extracted_rules=payload.extracted_rules,
+            approved=payload.approved, title=payload.title,
         )
     conn.commit()
     if payload.approved:
@@ -57,7 +58,7 @@ def update_source(conn, embedder: Embedder, payload: SourceUpdate,
     s = settings or get_settings()
     with conn.transaction():
         row = conn.execute(
-            "SELECT title FROM knowledge_sources WHERE source_id=%s AND brand_id=%s FOR UPDATE",
+            "SELECT title, source_type FROM knowledge_sources WHERE source_id=%s AND brand_id=%s FOR UPDATE",
             (payload.source_id, payload.brand_id),
         ).fetchone()
         if row is None:
@@ -67,6 +68,7 @@ def update_source(conn, embedder: Embedder, payload: SourceUpdate,
             "WHERE source_id=%s", (payload.source_id,)
         ).fetchone()["n"]
         rule_data = payload.rule_data
+        extracted_rules = payload.extracted_rules
         if rule_data is None:
             current = conn.execute(
                 "SELECT rule_data FROM knowledge_source_versions "
@@ -74,6 +76,10 @@ def update_source(conn, embedder: Embedder, payload: SourceUpdate,
                 (payload.source_id,),
             ).fetchone()
             rule_data = list((current or {}).get("rule_data") or [])
+        if extracted_rules is None:
+            # Extracted rules cite a specific immutable version. Never carry
+            # them over when source text changes.
+            extracted_rules = []
         new_title = payload.title or row["title"]
         current_type = conn.execute(
             "SELECT document_type FROM knowledge_source_versions WHERE source_id=%s "
@@ -90,8 +96,9 @@ def update_source(conn, embedder: Embedder, payload: SourceUpdate,
             conn, embedder, s, source_id=payload.source_id, brand_id=payload.brand_id,
             number=number, text=payload.text, document_id=payload.document_id,
             document_name=payload.document_name, metadata=payload.metadata,
-            document_type=document_type,
-            rule_data=rule_data, approved=payload.approved, title=new_title,
+            document_type=document_type, source_type=row["source_type"],
+            rule_data=rule_data, extracted_rules=extracted_rules,
+            approved=payload.approved, title=new_title,
         )
     conn.commit()
     if payload.approved:
@@ -100,20 +107,23 @@ def update_source(conn, embedder: Embedder, payload: SourceUpdate,
 
 
 def _insert_version(conn, embedder, s: Settings, *, source_id, brand_id, number, text,
-                    document_id, document_name, metadata, document_type, rule_data, approved, title) -> str:
+                    document_id, document_name, metadata, document_type, rule_data,
+                    approved, title, source_type="guideline", extracted_rules=()) -> str:
     version_id = _id("ver")
     metadata = {**metadata, "document_type": document_type}
     conn.execute(
         "INSERT INTO knowledge_source_versions (version_id, source_id, brand_id, version_number,"
-        " status, approval_status, text, document_id, document_name, metadata, rule_data, document_type) "
-        "VALUES (%s,%s,%s,%s,'pending',%s,%s,%s,%s,%s,%s,%s)",
+        " status, approval_status, text, document_id, document_name, metadata, rule_data, document_type, extracted_rules) "
+        "VALUES (%s,%s,%s,%s,'pending',%s,%s,%s,%s,%s,%s,%s,%s)",
         (version_id, source_id, brand_id, number, "approved" if approved else "pending",
-         text, document_id, document_name, Jsonb(metadata), Jsonb(rule_data), document_type),
+         text, document_id, document_name, Jsonb(metadata), Jsonb(rule_data), document_type, Jsonb([])),
     )
     chunks = chunk_text(text, s.chunk_max_chars)
     if not chunks:
         raise ValidationFailed("text produced no chunks")
+    chunk_refs = []
     for c in chunks:
+        chunk_id = _id("chunk")
         loc = {k: v for k, v in metadata.items()
                if k in ("document_id", "document_name", "section", "page", "pages")}
         if document_id:
@@ -137,10 +147,54 @@ def _insert_version(conn, embedder, s: Settings, *, source_id, brand_id, number,
             "INSERT INTO knowledge_chunks (chunk_id, brand_id, source_id, version_id, chunk_index,"
             " chunk_text, location, embedding_model, chunking_version, index_status, document_type) "
             "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'pending',%s)",
-            (_id("chunk"), brand_id, source_id, version_id, c.index, c.text, Jsonb(loc),
+            (chunk_id, brand_id, source_id, version_id, c.index, c.text, Jsonb(loc),
              embedder.tag, s.chunking_version, document_type),
         )
+        chunk_refs.append({"chunk_id": chunk_id, "text": c.text, "location": loc})
+    attached_rules = _attach_rule_provenance(
+        extracted_rules, source_id, version_id, brand_id, source_type,
+        title, number, text, metadata, chunk_refs,
+    )
+    conn.execute(
+        "UPDATE knowledge_source_versions SET extracted_rules=%s WHERE version_id=%s",
+        (Jsonb(attached_rules), version_id),
+    )
     return version_id
+
+
+def _attach_rule_provenance(rules, source_id, version_id, brand_id, source_type,
+                            title, version_number, text, metadata, chunks):
+    """Resolve model-returned exact quotes to this immutable source version."""
+    attached = []
+    for index, raw in enumerate(rules or [], start=1):
+        if not isinstance(raw, dict) or not isinstance(raw.get("statement"), str):
+            continue
+        citations = []
+        for citation in raw.get("citations", []):
+            quote = citation.get("quote") if isinstance(citation, dict) else None
+            if not isinstance(quote, str) or not quote or quote not in text:
+                continue
+            start = text.find(quote)
+            chunk = next((item for item in chunks if quote in item["text"]), None)
+            if chunk is None:
+                continue
+            page = next((span.get("page") for span in metadata.get("page_spans", [])
+                         if span.get("start", 0) <= start < span.get("end", 0)), None)
+            if page is None:
+                page = chunk["location"].get("page")
+            citations.append({
+                "source_id": source_id, "version_id": version_id, "brand_id": brand_id,
+                "source_type": source_type, "source_title": title,
+                "version_number": version_number, "chunk_id": chunk["chunk_id"],
+                "quote": quote, "page": page, "location": chunk["location"],
+            })
+        if not citations:
+            continue
+        attached.append({
+            **{key: value for key, value in raw.items() if key not in {"citations", "rule_id"}},
+            "rule_id": f"extracted_{index:03d}", "citations": citations,
+        })
+    return attached
 
 
 # ---------------------------------------------------------------- indexing
@@ -256,7 +310,7 @@ def get_version(conn, brand_id: str, source_id: str, version_id: str) -> SourceV
     r = conn.execute(
         "SELECT s.source_id, s.brand_id, s.source_type, s.title, s.updated_at, v.version_id,"
         " v.version_number, v.status, v.approval_status, v.text, v.metadata, v.created_at,"
-        " v.document_id, v.document_name, v.rule_data, v.document_type "
+        " v.document_id, v.document_name, v.rule_data, v.document_type, v.extracted_rules "
         "FROM knowledge_source_versions v JOIN knowledge_sources s ON s.source_id=v.source_id "
         "WHERE v.version_id=%s AND v.source_id=%s AND v.brand_id=%s",
         (version_id, source_id, brand_id),
@@ -273,7 +327,7 @@ def get_version(conn, brand_id: str, source_id: str, version_id: str) -> SourceV
         document_type=r["document_type"],
         title=r["title"], status=r["status"], approval_status=r["approval_status"],
         version_id=r["version_id"], version=r["version_number"], text=r["text"], metadata=meta,
-        rule_data=list(r["rule_data"] or []),
+        rule_data=list(r["rule_data"] or []), extracted_rules=list(r["extracted_rules"] or []),
         created_at=r["created_at"].isoformat(), updated_at=r["updated_at"].isoformat(),
     )
 
@@ -311,3 +365,45 @@ def get_deterministic_rules(conn, brand_id: str, channel: str | None) -> list[di
                 "source_excerpt": row["text"],
             })
     return result
+
+
+def get_extracted_rules(conn, brand_id: str, channel: str | None = None) -> list[dict]:
+    """Load extracted rules from current approved source versions only."""
+    rows = conn.execute(
+        "SELECT v.extracted_rules FROM knowledge_source_versions v "
+        "JOIN knowledge_sources s ON s.source_id=v.source_id AND s.brand_id=v.brand_id "
+        "WHERE v.brand_id=%s AND v.status='active' AND v.approval_status='approved' "
+        "AND s.current_version_id=v.version_id ORDER BY v.source_id",
+        (brand_id,),
+    ).fetchall()
+    result = []
+    for row in rows:
+        for rule in row["extracted_rules"] or []:
+            channels = rule.get("applies_to_channels") or []
+            if channels and (channel is None or channel not in channels):
+                continue
+            result.append(dict(rule))
+    return result
+
+
+def get_rulebook(conn, brand_id: str, channel: str | None = None) -> dict:
+    """Return active-version rules with extraction health for this session."""
+    rows = conn.execute(
+        "SELECT v.extracted_rules, v.metadata FROM knowledge_source_versions v "
+        "JOIN knowledge_sources s ON s.source_id=v.source_id AND s.brand_id=v.brand_id "
+        "WHERE v.brand_id=%s AND v.status='active' AND v.approval_status='approved' "
+        "AND s.current_version_id=v.version_id ORDER BY v.source_id",
+        (brand_id,),
+    ).fetchall()
+    rules = []
+    statuses = []
+    for row in rows:
+        metadata = row["metadata"] or {}
+        statuses.append(metadata.get("rule_extraction_status", "complete"))
+        for rule in row["extracted_rules"] or []:
+            channels = rule.get("applies_to_channels") or []
+            if not channels or (channel is not None and channel in channels):
+                rules.append(dict(rule))
+    failed = any(status in {"failed", "error"} for status in statuses)
+    return {"status": "error" if failed else "complete", "rules": rules,
+            "notes": "One or more approved sources could not be rule-extracted." if failed else ""}

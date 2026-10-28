@@ -27,6 +27,7 @@ def main() -> None:
         with contextlib.redirect_stdout(sys.stderr):
             from rag.parsing.registry import parse_document
             from rag.agentic.workflow import model_configuration, run_agentic_review
+            from rag.agentic.rulebook import extract_reference_rules
             from rag.agentic.correction import generate_corrected_docx
             from rag.review import prepare_review
             from rag.retrieval.client import IngestionKnowledgeAdapter
@@ -55,7 +56,7 @@ def main() -> None:
                 request = json.loads(line)
                 operation = request.get("operation")
                 if operation == "ingest":
-                    result = _ingest(request, parse_document, ingest, SourceCreate,
+                    result = _ingest(request, parse_document, extract_reference_rules, ingest, SourceCreate,
                                      db, settings, embedder, sessions)
                 elif operation == "review":
                     result = _review(request, parse_document, prepare_review,
@@ -126,13 +127,21 @@ def _session_brand_id(request, db, settings, sessions):
     return session["brandId"]
 
 
-def _ingest(request, parse_document, ingest, SourceCreate, db, settings, embedder, sessions):
+def _ingest(request, parse_document, extract_reference_rules, ingest, SourceCreate, db, settings, embedder, sessions):
     brand_id = _session_brand_id(request, db, settings, sessions)
     data = base64.b64decode(request["fileBase64"], validate=True)
     document = parse_document(data, document_name=request["fileName"],
                               content_type=request.get("contentType"), store_images=True)
     document_type = request["documentType"]
     source_type = "approved_fact" if document_type in {"approved_claims", "product_facts"} else "guideline"
+    approved = bool(request.get("approved", True))
+    extraction = {"status": "not_run", "rules": [], "notes": ""}
+    if approved:
+        try:
+            extraction = extract_reference_rules(document)
+        except Exception as exc:
+            extraction = {"status": "failed", "rules": [],
+                          "notes": f"Rule extraction failed ({type(exc).__name__})."}
     record = SourceCreate(
         brand_id=brand_id,
         source_type=source_type,
@@ -152,9 +161,12 @@ def _ingest(request, parse_document, ingest, SourceCreate, db, settings, embedde
                 for segment in document.segments if segment.page is not None
             ],
             "document_type": document_type,
+            "rule_extraction_status": extraction["status"],
+            "rule_extraction_notes": extraction.get("notes", ""),
         },
         rule_data=request.get("ruleData") or [],
-        approved=bool(request.get("approved", True)),
+        extracted_rules=extraction["rules"],
+        approved=approved,
     )
     with db.connect(settings) as conn:
         result = ingest.create_source(conn, embedder, record, settings)
@@ -169,6 +181,8 @@ def _ingest(request, parse_document, ingest, SourceCreate, db, settings, embedde
         "approval_status": result.approval_status,
         "chunk_count": len(ingest.chunk_text(document.text, settings.chunk_max_chars)),
         "rule_count": len(result.rule_data),
+        "extracted_rule_count": len(result.extracted_rules),
+        "rule_extraction_status": extraction["status"],
         "parse_warnings": list(document.warnings),
         "pages_processed": len(document.pages),
         "ocr_pages": sum(page.ocr_used for page in document.pages),
@@ -188,6 +202,7 @@ def _review(request, parse_document, prepare_review, Adapter, knowledge, db, ing
         with db.connect(settings) as conn:
             logo_records = logos.get_logo_assets(conn, brand_id)
             deterministic_rules = ingest.get_deterministic_rules(conn, brand_id, request.get("channel") or None)
+            rulebook = ingest.get_rulebook(conn, brand_id, request.get("channel") or None)
         approved_logos = []
         for logo in logo_records:
             try:
@@ -213,7 +228,8 @@ def _review(request, parse_document, prepare_review, Adapter, knowledge, db, ing
             retriever=adapter,
         )
         result = run_agentic_review(
-            prepared, adapter, logo_candidates=logo_candidates, approved_logos=approved_logos,
+            prepared, adapter, rulebook=rulebook,
+            logo_candidates=logo_candidates, approved_logos=approved_logos,
         )
         result["visualAssets"] = [image.model_dump(mode="json") for image in safe_images]
         result["logoReferences"] = [

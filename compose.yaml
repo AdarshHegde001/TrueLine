@@ -1,0 +1,67 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: trueline
+      POSTGRES_PASSWORD: trueline
+      POSTGRES_DB: trueline
+    ports:
+      - "5433:5432"
+    volumes:
+      - trueline_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trueline -d trueline"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file:
+      - path: ./backend/.env.example
+        required: true
+      - path: ./backend/.env
+        required: false
+    environment:
+      PORT: "3001"
+      FRONTEND_ORIGIN: http://localhost:5173
+      DATABASE_URL: postgresql://trueline:trueline@db:5432/trueline
+      PYTHON_BIN: /opt/venv/bin/python
+      HF_HOME: /model-cache
+      TRUELINE_ASSET_DIR: /app/data_ingestion/extracted_assets
+    ports:
+      - "3001:3001"
+    volumes:
+      - hf_cache:/model-cache
+      - extracted_assets:/app/data_ingestion/extracted_assets
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10m
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    environment:
+      VITE_API_BASE_URL: http://localhost:3001
+    ports:
+      - "5173:5173"
+    depends_on:
+      backend:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  trueline_pg:
+  hf_cache:
+  extracted_assets:

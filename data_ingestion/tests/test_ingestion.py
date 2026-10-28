@@ -79,6 +79,27 @@ def test_update_creates_new_immutable_version_old_text_unchanged(conn, svc):
     assert "1599" in res.results[0].chunk_text
 
 
+def test_rulebook_is_brand_and_active_version_scoped(conn):
+    rule = {
+        "kind": "product_fact",
+        "statement": "The serum costs INR 1499.",
+        "citations": [{"quote": "The serum costs INR 1499."}],
+    }
+    first = add(
+        conn, "b1", "Price", "The serum costs INR 1499.", stype="approved_fact",
+        extracted_rules=[rule],
+    )
+    assert len(ingest.get_rulebook(conn, "b1")["rules"]) == 1
+    assert ingest.get_rulebook(conn, "b2")["rules"] == []
+
+    second = ingest.update_source(
+        conn, EMB, SourceUpdate(brand_id="b1", source_id=first.source_id,
+                               text="The serum costs INR 1599."), S,
+    )
+    assert second.version_id != first.version_id
+    assert ingest.get_rulebook(conn, "b1")["rules"] == []
+
+
 def test_quote_must_be_exact_substring_of_that_version(conn):
     r = add(conn, "b1", "Price", "The serum costs INR 1499.", stype="approved_fact")
     assert ingest.quote_exists(conn, "b1", r.source_id, r.version_id, "costs INR 1499")

@@ -25,12 +25,12 @@ The current baseline is a single-organization, one-active-session prototype. It 
 ## At a glance
 
 1. Start a session. The API clears the previous session's indexed knowledge and creates a new isolated knowledge scope.
-2. Upload one or more reference files and assign a document type to each. Each file is parsed, chunked, embedded with BGE-M3, and stored in PostgreSQL with its source, version, and type metadata.
-3. Upload a draft to review and optionally select its channel. The backend parses it, runs available structured deterministic rules, and retrieves relevant passages.
-4. LangGraph runs the tone agent, claims agent, logo reviewer, and summarizer. The frontend renders the summary as Markdown and shows findings and citations.
-5. LangGraph first sends the existing RAG retrieval snapshot to a rule extraction agent. The backend validates every extracted rule against exact retrieved source/version/chunk IDs, excerpts, and metadata. Tone and claims agents then receive the original review text plus only validated rules in their own scope. The logo reviewer remains a separate visual branch. The summary agent receives only the review text and validated extracted rules, as specified for this workflow.
-6. If the user requests a corrected version, the correction agent receives the original parsed document, validated extracted rules, and final summary findings. It returns exact-span edits, and the backend applies only edits whose quoted text matches the original before generating a DOCX draft for the user to inspect.
-6. End the session when finished. The prototype deletes the session's sources, versions, chunks, and embeddings so a later session starts clean.
+2. Upload reference files and assign document types. Approved files are parsed, rule-extracted once, and indexed; extracted rules and original passages are stored against the approved source version.
+3. Upload a draft to review and optionally select its channel. The backend parses it, runs deterministic checks, and retrieves relevant passages.
+4. Tone and Claims agents review the full draft with applicable session rules and deterministic results. Each may run at most three targeted RAG searches, then reassess once with the returned evidence. The logo reviewer remains a separate visual branch.
+5. The backend validates and deduplicates deterministic and agent findings in a per-review buffer. The Summary agent can prioritize only those findings; the application renders the report from the validated buffer.
+6. If the user requests a corrected version, the correction agent receives the original parsed document, active extracted rules, and final findings. The backend applies only exact-span edits and generates a DOCX draft for inspection.
+7. End the session when finished. The prototype deletes the session's sources, versions, chunks, and embeddings so a later session starts clean.
 
 ## Architecture
 
@@ -39,22 +39,28 @@ flowchart LR
   U[User] --> FE[React + Vite frontend]
   FE -->|HTTP / multipart uploads| API[Express API]
   API -->|JSON Lines over stdio| W[Persistent Python worker]
-  W --> ING[Ingestion: parse, chunk, BGE-M3]
+  W --> PARSE[Parse and OCR]
+  PARSE -->|approved reference| EXTRACT[Rule extraction at ingestion]
+  EXTRACT --> RULES[(Versioned session rulebook)]
+  PARSE --> ING[Chunk and embed original source]
   ING --> DB[(PostgreSQL 16 + pgvector)]
   W --> PREP[Review preparation]
-  PREP --> PARSE[PDF, DOCX, TXT, MD parsing]
   PREP --> DET[Deterministic rule checks]
   PREP --> RET[Hybrid retrieval: vector + full-text]
   RET <--> DB
   PREP --> GRAPH[LangGraph workflow]
-  GRAPH --> EXTRACT[Rule extraction agent]
-  EXTRACT --> VALIDATE[Validate rules and citations]
-  VALIDATE --> TONE[Tone agent]
-  VALIDATE --> CLAIMS[Claims agent]
-  VALIDATE --> LOGO[Logo review branch]
-  TONE --> SUM[Summary agent: rules + document]
-  CLAIMS --> SUM
-  LOGO --> SUM
+  RULES --> TONE[Tone agent]
+  RULES --> CLAIMS[Claims agent]
+  GRAPH --> TONE
+  GRAPH --> CLAIMS
+  GRAPH --> LOGO[Logo review branch]
+  TONE <--> RET
+  CLAIMS <--> RET
+  TONE --> BUF[Validate and deduplicate findings]
+  CLAIMS --> BUF
+  DET --> BUF
+  LOGO --> BUF
+  BUF --> SUM[Summary agent: validated findings only]
   SUM -. User requests correction .-> CORRECT[Correction agent]
   CORRECT --> DOCX[Corrected DOCX]
   EXTRACT -. Gemini API .-> MODEL[Gemini OpenAI-compatible endpoint]
@@ -73,22 +79,22 @@ flowchart LR
 | `backend/` | Express HTTP API, multipart upload validation, session-aware requests, and a long-lived Python worker bridge. Loads `backend/.env`. |
 | `data_ingestion/` | PostgreSQL schema/migrations, source/version management, chunking, embeddings, hybrid search, and ephemeral session cleanup. |
 | `rag/parsing/` | Extracts text and location metadata from PDF, DOCX, Markdown, and plain text files. Sparse image-heavy PDF pages use adaptive Tesseract OCR. |
-| `rag/rules/` | Evaluates structured deterministic rules supplied with an ingested source. It does not turn natural-language policy prose into executable rules. |
+| `rag/rules/` | Evaluates machine-checkable structured rules supplied with an ingested source. Natural-language extracted rules are kept in the separate evidence-linked rulebook and reviewed by specialist agents. |
 | `rag/retrieval/` | Adapts the ingestion search interface and retrieves evidence for review passages while preserving source and location information. |
 | `rag/agentic/` | LangGraph rule extraction, tone, claims, logo comparison, and summary nodes, plus the on-demand correction agent; each model role has its own provider, model, endpoint, key, and timeout settings. |
 
 ### Review workflow
 
-1. **Parse.** The uploaded review file is decoded and parsed into text segments and source locations.
-2. **Check deterministic rules.** The backend loads approved structured rules for the active session and requested channel, then runs terminology and required-text checks. If no structured rules were supplied, this stage has no rules to apply.
-3. **Retrieve context.** Parsed passages are used as search queries. PostgreSQL combines BGE-M3 vector similarity with PostgreSQL full-text search and Reciprocal Rank Fusion. Results are scoped to the active session and carry source/version/chunk identifiers and document types.
-4. **Extract rules.** The extraction agent receives the existing retrieved evidence snapshot. It may return only explicitly stated rules, approved claims, and product facts with exact citations. Backend validation rejects citations that do not resolve to the current session's retrieved source/version/chunk and excerpt.
-5. **Review tone and claims.** The tone agent receives the original review document and validated tone rules. The claims agent receives the same document and validated claim rules, approved claims, and product facts. Both are restricted to their scope and can cite only citations attached to those validated rules. The logo reviewer remains on its visual branch.
-6. **Summarize.** The summary agent receives only the original review document and validated extracted rules; it does not receive tone, claims, deterministic, or logo results. Its structured findings are validated and rendered with backend-resolved source, version, page, and excerpt information. Human review remains required.
-7. **Render.** The API returns structured results and evidence to the frontend, which renders the Markdown summary and citation details.
-8. **Correct on request.** Only after the user clicks **Generate corrected DOCX**, a separate correction model receives the original parsed text, validated extracted rules, and final summary findings. It may propose exact-quote replacements only; mismatched/ambiguous quotes are skipped. The resulting DOCX is a draft and may not preserve the original layout or visuals.
+1. **Ingest references.** Approved references use the existing extraction and OCR pipeline. The extraction agent records explicit rules with exact quotations, source version, chunk, and page provenance; original passages continue through chunking and embedding. Extraction failures are reported without blocking source indexing.
+2. **Parse the draft.** The uploaded review file is decoded and parsed into text segments and source locations.
+3. **Check deterministic rules.** The backend loads approved machine-checkable rules for the active session and requested channel, then runs terminology and required-text checks.
+4. **Retrieve and investigate.** Parsed passages get an initial hybrid retrieval snapshot. Tone and Claims receive the full review text, applicable active-version rulebook entries, deterministic results, and this snapshot. Each can request at most three targeted searches, with up to five results each in its allowed document types, then reassess once. Missing evidence is not treated as proof of falsity.
+5. **Validate and consolidate.** Exact review spans and source citations are checked against approved current-session evidence. Deterministic and specialist findings enter a per-review in-memory buffer, where exact duplicates are merged.
+6. **Summarize.** The summary model can prioritize IDs from the validated buffer only. It cannot add, reclassify, or remove findings; the application renders the report from the buffer. Human review remains required.
+7. **Render.** The API returns structured results and evidence to the frontend, which renders the Markdown report and citations.
+8. **Correct on request.** Only after the user clicks **Generate corrected DOCX**, a separate correction model receives the original parsed text, active extracted rules, and validated findings. It may propose exact-quote replacements only; mismatched/ambiguous quotes are skipped. The resulting DOCX is a draft and may not preserve the original layout or visuals.
 
-Rule extraction runs before the specialist agents. Tone, claims, and the logo branch run after extraction; their results remain visible to the user, while the summary agent's input is deliberately limited to the original document and validated extracted rules. Correction runs only on user request. Model calls are independently configured per role even when all roles point to the same Gemini model.
+Rule extraction runs once when each approved reference version is ingested. Tone, claims, and logo review run for each submitted draft; the summary model sees only the validated finding buffer. Correction runs only on user request. Model calls are independently configured per role even when all roles point to the same Gemini model.
 
 ## Requirements
 
@@ -104,6 +110,18 @@ The local database uses PostgreSQL 16 with the pgvector extension via the `pgvec
 ## Run locally
 
 Run each service in a separate terminal from the repository root unless a step says otherwise.
+
+### Run the full stack with Docker Compose
+
+Docker Compose starts PostgreSQL with pgvector, the Express API and its Python worker (including Tesseract OCR), and the Vite frontend:
+
+```bash
+docker compose up --build
+```
+
+Open `http://localhost:5173`; the API health endpoint is `http://localhost:3001/api/health`. The first build installs the application dependencies, and the first backend startup downloads the BGE-M3 model (about 2.27 GB). The model cache and database are kept in named Docker volumes between runs. Press Ctrl+C to stop the services, then use `docker compose down` to remove the containers and network.
+
+To enable model-backed reviews, copy `backend/.env.example` to `backend/.env` and add the Gemini API keys for the agents you use before starting Compose. The app can start without keys, but model calls will fail until the relevant keys are configured. Docker Compose reads this optional file automatically.
 
 ### 1. Configure environment
 
@@ -305,7 +323,7 @@ Start the backend and frontend as described above. Optional ingestion tests use 
 
 - No authentication, user accounts, authorization, or multi-tenant isolation; the session token is not an access-control mechanism.
 - OCR quality depends on scan quality and the locally installed Tesseract language data. Logo screening compares extracted images with uploaded references and may miss logos that are substantially altered or embedded as page-level vector artwork.
-- No natural-language policy-to-rule extraction or dedicated structured-rule editor in the UI.
+- Model-extracted rulebooks depend on the extraction model and preserve exact supporting quotations; they do not create executable deterministic rules or a dedicated structured-rule editor in the UI.
 - Agent outputs can be incomplete or wrong; a human must verify the evidence and conclusions.
 - BGE-M3 uses a substantial local model download, and the current exact vector scan is intended for a small dataset.
 - Model choice and endpoint are configured by a trusted local operator in `.env`; the UI does not accept user-supplied model endpoints or API keys.

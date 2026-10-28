@@ -131,6 +131,34 @@ def test_reference_chunk_location_keeps_all_overlapping_pdf_pages():
     assert location["pages"] == [1, 2]
 
 
+def test_extracted_rule_provenance_requires_exact_quote_and_uses_source_page():
+    from trueline_ingestion.ingest import _attach_rule_provenance
+
+    text = "Tone should be calm and direct."
+    rules = _attach_rule_provenance(
+        [
+            {"kind": "tone_rule", "statement": "Use a calm voice.", "citations": [
+                {"quote": "Tone should be calm", "page": 999},
+                {"quote": "invented quote", "page": 1},
+            ]},
+            {"kind": "claim_rule", "statement": "Unsupported", "citations": [
+                {"quote": "not present", "page": 1},
+            ]},
+        ],
+        "src_test", "ver_test", "brand_test", "guideline", "Guide", 2,
+        text, {"page_spans": [{"page": 4, "start": 0, "end": len(text)}]},
+        [{"chunk_id": "chunk_test", "text": text, "location": {"page": 4}}],
+    )
+
+    assert len(rules) == 1
+    assert rules[0]["rule_id"] == "extracted_001"
+    citation = rules[0]["citations"][0]
+    assert citation["quote"] == "Tone should be calm"
+    assert citation["page"] == 4
+    assert citation["version_id"] == "ver_test"
+    assert citation["chunk_id"] == "chunk_test"
+
+
 def test_tesseract_is_discovered_from_user_install_when_parent_path_is_stale(tmp_path, monkeypatch):
     import os
     import shutil

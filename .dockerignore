@@ -1,0 +1,13 @@
+.git
+.venv
+venv
+**/node_modules
+**/dist
+**/build
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.env
+**/.env.*
+!**/.env.example
+data_ingestion/extracted_assets
