@@ -264,11 +264,13 @@ def test_duplicate_summary_items_collapse_but_distinct_claims_in_same_sentence_r
 
 
 def test_specialist_prompts_are_scoped_and_summary_candidates_combine_agents():
-    assert "Do not assess whether factual/product claims" in workflow.TONE_AGENT_INSTRUCTIONS
-    assert "leave those exclusively to the claims specialist" in workflow.TONE_AGENT_INSTRUCTIONS
-    assert "Do not assess voice, tone" in workflow.CLAIMS_AGENT_INSTRUCTIONS
-    assert "leave those exclusively to the tone specialist" in workflow.CLAIMS_AGENT_INSTRUCTIONS
-    assert "tone findings, claims findings, and logo observations together" in workflow.SUMMARY_AGENT_INSTRUCTIONS
+    assert "Do not assess factual truth, product claims" in workflow.TONE_AGENT_INSTRUCTIONS
+    assert "those are outside your role" in workflow.TONE_AGENT_INSTRUCTIONS
+    assert "Do not assess voice, " in workflow.CLAIMS_AGENT_INSTRUCTIONS
+    assert "those exclusively to the tone specialist" in workflow.CLAIMS_AGENT_INSTRUCTIONS
+    assert "only inputs are the original review document and validated" in workflow.SUMMARY_AGENT_INSTRUCTIONS
+    assert "do not receive tone-agent results" in workflow.SUMMARY_AGENT_INSTRUCTIONS
+    assert "Do not create, infer, generalize" in workflow.RULE_EXTRACTION_AGENT_INSTRUCTIONS
 
     prepared = SimpleNamespace(deterministic=SimpleNamespace(findings=()))
     tone = {"findings": [{
@@ -339,3 +341,67 @@ def test_agent_failures_are_classified_and_summary_stays_within_validated_result
     assert result["agentResults"]["summary"]["status"] == "error"
     assert "No unique, evidence-backed issues" in result["agentResults"]["summary"]["summary"]
     assert "CHECK_FAILED" in result["agentResults"]["summary"]["summary"]
+    assert result["agentResults"]["extraction"]["classification"] == "CHECK_FAILED"
+
+
+def test_extraction_accepts_only_current_retrieved_citations_and_adds_rule_ids():
+    output = workflow._normalize_extraction_result({
+        "status": "complete", "rules": [{
+            "kind": "product_fact", "statement": "Nova increases customer retention by 20 percent.",
+            "citations": [_citation()],
+        }, {
+            "kind": "product_fact", "statement": "Nova doubles retention.",
+            "citations": [{**_citation(), "source_id": "invented-source"}],
+        }],
+    }, EVIDENCE, brand_id=BRAND)
+    assert output["classification"] == "PASSED"
+    assert len(output["rules"]) == 1
+    assert output["rules"][0]["rule_id"] == "rule_001"
+    citation = output["rules"][0]["citations"][0]
+    assert citation["source_title"] == "Approved Product Facts"
+    assert citation["version_number"] == 2
+    assert citation["page"] == 4
+
+
+def test_review_graph_passes_extracted_rules_to_specialists_and_only_rules_to_summary(monkeypatch):
+    document_text = "Nova increases customer retention by 20 percent."
+    document = ParsedDocument(
+        document_name="draft.txt", media_type="text/plain", text=document_text,
+        segments=(ContentSegment(text=document_text, start=0, end=len(document_text)),),
+        parser="plain-text", parser_version="1",
+    )
+
+    class Retriever:
+        def search_knowledge(self, request):
+            from rag.retrieval.models import RetrievedChunk
+            return KnowledgeSearchResponse(brand_id=request.brand_id, retrieval_method="vector", results=(
+                RetrievedChunk(**SOURCE, rank=1, score=0.9),
+            ))
+
+        def get_deterministic_rules(self, *, brand_id, channel):
+            return []
+
+    prepared = prepare_review(document, brand_id=BRAND, channel=None, retriever=Retriever())
+    captured = {}
+
+    def fake_json(_chat, schema, _system, payload, images=None):
+        captured[schema.__name__] = payload
+        if schema is workflow.ExtractionResult:
+            return {"status": "complete", "rules": [{"kind": "product_fact",
+                "statement": SOURCE["chunk_text"], "citations": [_citation()]}], "notes": ""}
+        if schema is workflow.ClaimsResult:
+            return {"status": "complete", "classification": "PASSED", "findings": [], "notes": ""}
+        if schema is workflow.SummaryResult:
+            return {"status": "complete", "classification": "PASSED", "summary": "",
+                    "key_findings": [], "selected_finding_ids": [], "human_review_required": True, "findings": []}
+        raise AssertionError(f"Unexpected model schema: {schema.__name__}")
+
+    monkeypatch.setattr(workflow, "_chat", lambda _agent: object())
+    monkeypatch.setattr(workflow, "_json_result", fake_json)
+    result = workflow.run_agentic_review(prepared, Retriever())
+    assert "extracted_rules" in captured["ClaimsResult"]
+    assert "review_document" in captured["ClaimsResult"]
+    summary_payload = captured["SummaryResult"]
+    assert set(summary_payload) == {"review_document", "extracted_rules"}
+    assert "tone_agent" not in summary_payload and "claims_agent" not in summary_payload
+    assert result["agentResults"]["extraction"]["rules"][0]["rule_id"] == "rule_001"

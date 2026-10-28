@@ -28,7 +28,8 @@ The current baseline is a single-organization, one-active-session prototype. It 
 2. Upload one or more reference files and assign a document type to each. Each file is parsed, chunked, embedded with BGE-M3, and stored in PostgreSQL with its source, version, and type metadata.
 3. Upload a draft to review and optionally select its channel. The backend parses it, runs available structured deterministic rules, and retrieves relevant passages.
 4. LangGraph runs the tone agent, claims agent, logo reviewer, and summarizer. The frontend renders the summary as Markdown and shows findings and citations.
-5. If the user requests a corrected version, the correction agent receives the original parsed document and completed review findings. It returns exact-span edits, and the backend applies only edits whose quoted text matches the original before generating a DOCX draft for the user to inspect.
+5. LangGraph first sends the existing RAG retrieval snapshot to a rule extraction agent. The backend validates every extracted rule against exact retrieved source/version/chunk IDs, excerpts, and metadata. Tone and claims agents then receive the original review text plus only validated rules in their own scope. The logo reviewer remains a separate visual branch. The summary agent receives only the review text and validated extracted rules, as specified for this workflow.
+6. If the user requests a corrected version, the correction agent receives the original parsed document, validated extracted rules, and final summary findings. It returns exact-span edits, and the backend applies only edits whose quoted text matches the original before generating a DOCX draft for the user to inspect.
 6. End the session when finished. The prototype deletes the session's sources, versions, chunks, and embeddings so a later session starts clean.
 
 ## Architecture
@@ -46,10 +47,18 @@ flowchart LR
   PREP --> RET[Hybrid retrieval: vector + full-text]
   RET <--> DB
   PREP --> GRAPH[LangGraph workflow]
-  GRAPH --> TONE[Tone agent]
-  TONE --> CLAIMS[Claims agent]
-  CLAIMS --> SUM[Summary agent]
-  TONE -. Gemini API .-> MODEL[Gemini OpenAI-compatible endpoint]
+  GRAPH --> EXTRACT[Rule extraction agent]
+  EXTRACT --> VALIDATE[Validate rules and citations]
+  VALIDATE --> TONE[Tone agent]
+  VALIDATE --> CLAIMS[Claims agent]
+  VALIDATE --> LOGO[Logo review branch]
+  TONE --> SUM[Summary agent: rules + document]
+  CLAIMS --> SUM
+  LOGO --> SUM
+  SUM -. User requests correction .-> CORRECT[Correction agent]
+  CORRECT --> DOCX[Corrected DOCX]
+  EXTRACT -. Gemini API .-> MODEL[Gemini OpenAI-compatible endpoint]
+  TONE -. Gemini API .-> MODEL
   CLAIMS -. Gemini API .-> MODEL
   SUM -. Gemini API .-> MODEL
   SUM --> API
@@ -66,20 +75,20 @@ flowchart LR
 | `rag/parsing/` | Extracts text and location metadata from PDF, DOCX, Markdown, and plain text files. Sparse image-heavy PDF pages use adaptive Tesseract OCR. |
 | `rag/rules/` | Evaluates structured deterministic rules supplied with an ingested source. It does not turn natural-language policy prose into executable rules. |
 | `rag/retrieval/` | Adapts the ingestion search interface and retrieves evidence for review passages while preserving source and location information. |
-| `rag/agentic/` | LangGraph tone, claims, logo comparison, and summary nodes; each node has its own provider, model, endpoint, key, and timeout settings. |
+| `rag/agentic/` | LangGraph rule extraction, tone, claims, logo comparison, and summary nodes, plus the on-demand correction agent; each model role has its own provider, model, endpoint, key, and timeout settings. |
 
 ### Review workflow
 
 1. **Parse.** The uploaded review file is decoded and parsed into text segments and source locations.
 2. **Check deterministic rules.** The backend loads approved structured rules for the active session and requested channel, then runs terminology and required-text checks. If no structured rules were supplied, this stage has no rules to apply.
 3. **Retrieve context.** Parsed passages are used as search queries. PostgreSQL combines BGE-M3 vector similarity with PostgreSQL full-text search and Reciprocal Rank Fusion. Results are scoped to the active session and carry source/version/chunk identifiers and document types.
-4. **Review tone.** The tone agent searches tone-of-voice, brand-guideline, and glossary evidence. Findings are retained only when they cite a retrieved passage.
-5. **Verify claims.** The claims agent searches approved claims, product facts, brand guidance, and legal/compliance references. Supported or contradicted claim findings require citations to approved-fact sources; without that evidence, a claim stays unverified.
-6. **Summarize.** The summary agent receives the review context, deterministic findings, retrieved evidence, and both specialist results. It returns Markdown and keeps human review required.
+4. **Extract rules.** The extraction agent receives the existing retrieved evidence snapshot. It may return only explicitly stated rules, approved claims, and product facts with exact citations. Backend validation rejects citations that do not resolve to the current session's retrieved source/version/chunk and excerpt.
+5. **Review tone and claims.** The tone agent receives the original review document and validated tone rules. The claims agent receives the same document and validated claim rules, approved claims, and product facts. Both are restricted to their scope and can cite only citations attached to those validated rules. The logo reviewer remains on its visual branch.
+6. **Summarize.** The summary agent receives only the original review document and validated extracted rules; it does not receive tone, claims, deterministic, or logo results. Its structured findings are validated and rendered with backend-resolved source, version, page, and excerpt information. Human review remains required.
 7. **Render.** The API returns structured results and evidence to the frontend, which renders the Markdown summary and citation details.
-8. **Correct on request.** Only after the user clicks **Generate corrected DOCX**, a separate correction model receives the original parsed text, summary, and findings. It may propose exact-quote replacements only; mismatched/ambiguous quotes are skipped. The resulting DOCX is a draft and may not preserve the original layout or visuals.
+8. **Correct on request.** Only after the user clicks **Generate corrected DOCX**, a separate correction model receives the original parsed text, validated extracted rules, and final summary findings. It may propose exact-quote replacements only; mismatched/ambiguous quotes are skipped. The resulting DOCX is a draft and may not preserve the original layout or visuals.
 
-The model steps are sequential: the claims agent receives the tone result, and the summarizer receives both earlier agent results. Model calls are independent per role even when all roles point to the same Gemini model.
+Rule extraction runs before the specialist agents. Tone, claims, and the logo branch run after extraction; their results remain visible to the user, while the summary agent's input is deliberately limited to the original document and validated extracted rules. Correction runs only on user request. Model calls are independently configured per role even when all roles point to the same Gemini model.
 
 ## Requirements
 

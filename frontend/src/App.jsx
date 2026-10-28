@@ -390,23 +390,12 @@ function App() {
     setCorrectionBusy(true);
     setCorrectedDocx(null);
     try {
-      const findings = [
-        ...deterministicFindings.map((finding) => ({
-          category: 'Deterministic', classification: finding.label?.toUpperCase(), severity: finding.severity,
-          document_quote: finding.quote, explanation: finding.explanation, rule_id: finding.rule_id,
-          citations: finding.source ? [{ source_id: finding.source.source_id, version_id: finding.source.version_id,
-            source_title: finding.source.title, quote: finding.source.excerpt }] : [],
-        })),
-        ...['tone', 'claims'].flatMap((category) => (agentResults[category]?.findings || []).map((finding) => ({ category, ...finding }))),
-        ...(logoAgentResult?.findings || []).map((finding) => ({
-          category: 'Logo observation', page: finding.page, observation: finding.observation,
-          comparison: finding.comparison, classification: finding.classification,
-        })),
-      ];
+      const findings = summaryResult.findings || [];
+      const extractedRules = agentResults.extraction?.rules || [];
       const body = new FormData();
       body.append('file', reviewFile);
       body.append('sessionId', session.sessionId);
-      body.append('reviewData', JSON.stringify({ summary: summaryResult.summary, findings }));
+      body.append('reviewData', JSON.stringify({ summary: summaryResult.summary, extracted_rules: extractedRules, findings }));
       const response = await fetch(`${API}/api/review/correct`, { method: 'POST', body });
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
@@ -442,6 +431,7 @@ function App() {
   const deterministicFindings = reviewResult?.preparedReview?.deterministic?.findings || [];
   const agentResults = reviewResult?.agentResults || {};
   const summaryResult = agentResults.summary;
+  const extractionResult = agentResults.extraction;
   const logoAgentResult = agentResults.logo;
   const specialistEvidence = reviewResult?.agentEvidence || {};
 
@@ -545,7 +535,7 @@ function App() {
                   <article><span className="workflow-index">01</span><span className="workflow-icon">↥</span><h3>Add knowledge</h3><p>Upload guidelines, tone rules, claims, facts, glossaries, and asset rules with a document type.</p><span className="stage-tag available">Available now</span></article>
                   <article><span className="workflow-index">02</span><span className="workflow-icon">▤</span><h3>Prepare the index</h3><p>Text is parsed, chunked, tagged, and embedded for hybrid search with PostgreSQL and pgvector.</p><span className="stage-tag available">Available now</span></article>
                   <article><span className="workflow-index">03</span><span className="workflow-icon">⌕</span><h3>Check a draft</h3><p>Deterministic rules run and relevant approved evidence is retrieved for the submitted document.</p><span className="stage-tag available">Available now</span></article>
-                  <article><span className="workflow-index">04</span><span className="workflow-icon">✧</span><h3>Summarize with agents</h3><p>Tone and claims agents assess focused evidence; a final agent summarizes findings with citations.</p><span className="stage-tag available">Available now</span></article>
+                  <article><span className="workflow-index">04</span><span className="workflow-icon">✧</span><h3>Extract, review, summarize</h3><p>An extraction agent validates explicit rules and citations first; focused tone and claims agents review against them, while the final agent summarizes from the rules and draft.</p><span className="stage-tag available">Available now</span></article>
                 </div>
               </div>
             </section>
@@ -802,12 +792,16 @@ function App() {
                 </div>
               </div>
               <div className="agent-results-grid">
+                <details className="panel result-panel specialist-panel specialist-details" open>
+                  <summary className="result-panel-heading"><span className="specialist-summary-title"><span className="result-index">1</span><span className="agent-accordion-title">Rule extraction</span></span><span className="result-count">{extractionResult?.rules?.length || 0} RULE{extractionResult?.rules?.length === 1 ? '' : 'S'}</span></summary>
+                  {extractionResult?.rules?.length ? <div className="agent-finding-list">{extractionResult.rules.map((rule) => <article className="agent-finding" key={rule.rule_id}><b>{rule.kind?.replaceAll('_', ' ')}</b><p>{rule.statement}</p>{(rule.citations || []).map((citation, index) => <article className="citation-card" key={`${rule.rule_id}-${citation.source_id}-${index}`}><div className="citation-heading"><b>{citation.source_title || citation.source_id}</b><span>v{citation.version_number ?? citation.version_id}</span></div><small>{citation.pages?.length ? `page${citation.pages.length > 1 ? 's' : ''} ${citation.pages.join(', ')}` : citation.page ? `page ${citation.page}` : 'page unavailable'}</small><blockquote>“{citation.quote}”</blockquote></article>)}</article>)}</div> : <div className="agent-empty"><b>{extractionResult?.classification === 'CHECK_FAILED' ? 'Extraction could not complete' : 'No supported rules extracted'}</b><p>{extractionResult?.notes || 'Retrieved sources did not contain explicit, relevant rules or approved facts.'}</p></div>}
+                </details>
                 {['tone', 'claims'].map((agentName) => {
                   const agent = agentResults[agentName];
                   const evidence = specialistEvidence[agentName] || [];
                   const findings = agent?.findings || [];
                   return <details className="panel result-panel specialist-panel specialist-details" key={agentName}>
-                    <summary className="result-panel-heading"><span className="specialist-summary-title"><span className="result-index">{agentName === 'tone' ? 'B' : 'C'}</span><span className="agent-accordion-title">{agentName === 'tone' ? 'Tone agent' : 'Claims agent'}</span></span><span className="result-count">{findings.length} FINDING{findings.length === 1 ? '' : 'S'}</span></summary>
+                    <summary className="result-panel-heading"><span className="specialist-summary-title"><span className="result-index">{agentName === 'tone' ? '2' : '3'}</span><span className="agent-accordion-title">{agentName === 'tone' ? 'Tone agent' : 'Claims agent'}</span></span><span className="result-count">{findings.length} FINDING{findings.length === 1 ? '' : 'S'}</span></summary>
                     {findings.length ? <div className="agent-finding-list">{findings.map((finding, index) => {
                       return (
                         <article className="agent-finding" key={`${agentName}-${index}`}>
@@ -833,7 +827,7 @@ function App() {
                   </details>;
                 })}
                 <div className="panel result-panel specialist-panel logo-review-panel">
-                  <div className="result-panel-heading"><div><span className="result-index">D</span><h3>Logo review</h3></div><span className="result-count">{logoAgentResult?.findings?.length || 0} OBSERVATION{logoAgentResult?.findings?.length === 1 ? '' : 'S'}</span></div>
+                  <div className="result-panel-heading"><div><span className="result-index">4</span><h3>Logo review</h3></div><span className="result-count">{logoAgentResult?.findings?.length || 0} OBSERVATION{logoAgentResult?.findings?.length === 1 ? '' : 'S'}</span></div>
                   {logoAgentResult?.findings?.length ? <div className="agent-finding-list">{logoAgentResult.findings.map((finding, index) => {
                     const reference = reviewResult.logoReferences?.find((item) => item.logo_id === finding.reference_logo_id);
                     return <article className="agent-finding" key={`${finding.review_image_id}-${index}`}>
