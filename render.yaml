@@ -1,102 +1,106 @@
-databases:
-  - name: trueline-postgres
-    databaseName: trueline
-    plan: 0.1c-256mb
-    diskSizeGB: 1
-    postgresMajorVersion: "16"
-    region: oregon
+projects:
+  - name: TrueLine
+    environments:
+      - name: production
+        databases:
+          - name: trueline-postgres
+            databaseName: trueline
+            plan: 0.1c-256mb
+            diskSizeGB: 1
+            postgresMajorVersion: "16"
+            region: oregon
 
-services:
-  - type: web
-    name: trueline-api
-    runtime: docker
-    plan: 1c-2g
-    region: oregon
-    dockerfilePath: ./backend/Dockerfile
-    dockerContext: .
-    healthCheckPath: /api/health
-    autoDeployTrigger: commit
-    disk:
-      name: trueline-assets
-      mountPath: /var/data
-      sizeGB: 1
-    envVars:
-      - key: DATABASE_URL
-        fromDatabase:
-          name: trueline-postgres
-          property: connectionString
-      - key: TRUELINE_ASSET_DIR
-        value: /var/data/assets
-      - key: PYTHON_BIN
-        value: /opt/venv/bin/python
-      - key: TRUELINE_BRAND_ID
-        value: brand_lumina
-      - key: TRUELINE_ORGANIZATION_NAME
-        value: Lumina Studio
-      - key: INGESTION_EMBEDDER
-        value: gemini
-      - key: GEMINI_EMBEDDING_MODEL
-        value: gemini-embedding-2
-      - key: GEMINI_EMBEDDING_API_KEY
-        sync: false
-      - key: TRUELINE_EXTRACTION_PROVIDER
-        value: gemini
-      - key: TRUELINE_EXTRACTION_BASE_URL
-        value: https://generativelanguage.googleapis.com/v1beta/openai/
-      - key: TRUELINE_EXTRACTION_API_KEY
-        sync: false
-      - key: TRUELINE_EXTRACTION_MODEL
-        value: gemini-3.1-flash-lite
-      - key: TRUELINE_EXTRACTION_TIMEOUT_SECONDS
-        value: "120"
-      - key: TRUELINE_TONE_PROVIDER
-        value: gemini
-      - key: TRUELINE_TONE_BASE_URL
-        value: https://generativelanguage.googleapis.com/v1beta/openai/
-      - key: TRUELINE_TONE_API_KEY
-        sync: false
-      - key: TRUELINE_TONE_MODEL
-        value: gemini-3.1-flash-lite
-      - key: TRUELINE_TONE_TIMEOUT_SECONDS
-        value: "120"
-      - key: TRUELINE_CLAIMS_PROVIDER
-        value: gemini
-      - key: TRUELINE_CLAIMS_BASE_URL
-        value: https://generativelanguage.googleapis.com/v1beta/openai/
-      - key: TRUELINE_CLAIMS_API_KEY
-        sync: false
-      - key: TRUELINE_CLAIMS_MODEL
-        value: gemini-3.1-flash-lite
-      - key: TRUELINE_CLAIMS_TIMEOUT_SECONDS
-        value: "120"
-      - key: TRUELINE_SUMMARY_PROVIDER
-        value: gemini
-      - key: TRUELINE_SUMMARY_BASE_URL
-        value: https://generativelanguage.googleapis.com/v1beta/openai/
-      - key: TRUELINE_SUMMARY_API_KEY
-        sync: false
-      - key: TRUELINE_SUMMARY_MODEL
-        value: gemini-3.1-flash-lite
-      - key: TRUELINE_SUMMARY_TIMEOUT_SECONDS
-        value: "120"
-      - key: TRUELINE_CORRECTION_PROVIDER
-        value: gemini
-      - key: TRUELINE_CORRECTION_BASE_URL
-        value: https://generativelanguage.googleapis.com/v1beta/openai/
-      - key: TRUELINE_CORRECTION_API_KEY
-        sync: false
-      - key: TRUELINE_CORRECTION_MODEL
-        value: gemini-3.1-flash-lite
-      - key: TRUELINE_CORRECTION_TIMEOUT_SECONDS
-        value: "120"
-      - key: TRUELINE_LOGO_PROVIDER
-        value: gemini
-      - key: TRUELINE_LOGO_BASE_URL
-        value: https://generativelanguage.googleapis.com/v1beta/openai/
-      - key: TRUELINE_LOGO_API_KEY
-        sync: false
-      - key: TRUELINE_LOGO_MODEL
-        value: gemini-3.1-flash-lite
-      - key: TRUELINE_LOGO_TIMEOUT_SECONDS
-        value: "120"
+        services:
+          - type: web
+            name: trueline-api
+            runtime: docker
+            plan: 1c-2g
+            region: oregon
+            dockerfilePath: ./backend/Dockerfile
+            dockerContext: .
+            healthCheckPath: /api/health
+            autoDeployTrigger: commit
+            disk:
+              name: trueline-assets
+              mountPath: /var/data
+              sizeGB: 1
+            envVars:
+              - key: DATABASE_URL
+                fromDatabase:
+                  name: trueline-postgres
+                  property: connectionString
+              - key: TRUELINE_ASSET_DIR
+                value: /var/data/assets
+              - key: PYTHON_BIN
+                value: /opt/venv/bin/python
+              - key: TRUELINE_BRAND_ID
+                value: brand_lumina
+              - key: TRUELINE_ORGANIZATION_NAME
+                value: Lumina Studio
+              - key: INGESTION_EMBEDDER
+                value: gemini
+              - key: GEMINI_EMBEDDING_MODEL
+                value: gemini-embedding-2
+              - key: GEMINI_EMBEDDING_API_KEY
+                sync: false
+              - key: TRUELINE_EXTRACTION_PROVIDER
+                value: gemini
+              - key: TRUELINE_EXTRACTION_BASE_URL
+                value: https://generativelanguage.googleapis.com/v1beta/openai/
+              - key: TRUELINE_EXTRACTION_API_KEY
+                sync: false
+              - key: TRUELINE_EXTRACTION_MODEL
+                value: gemini-3.1-flash-lite
+              - key: TRUELINE_EXTRACTION_TIMEOUT_SECONDS
+                value: "120"
+              - key: TRUELINE_TONE_PROVIDER
+                value: gemini
+              - key: TRUELINE_TONE_BASE_URL
+                value: https://generativelanguage.googleapis.com/v1beta/openai/
+              - key: TRUELINE_TONE_API_KEY
+                sync: false
+              - key: TRUELINE_TONE_MODEL
+                value: gemini-3.1-flash-lite
+              - key: TRUELINE_TONE_TIMEOUT_SECONDS
+                value: "120"
+              - key: TRUELINE_CLAIMS_PROVIDER
+                value: gemini
+              - key: TRUELINE_CLAIMS_BASE_URL
+                value: https://generativelanguage.googleapis.com/v1beta/openai/
+              - key: TRUELINE_CLAIMS_API_KEY
+                sync: false
+              - key: TRUELINE_CLAIMS_MODEL
+                value: gemini-3.1-flash-lite
+              - key: TRUELINE_CLAIMS_TIMEOUT_SECONDS
+                value: "120"
+              - key: TRUELINE_SUMMARY_PROVIDER
+                value: gemini
+              - key: TRUELINE_SUMMARY_BASE_URL
+                value: https://generativelanguage.googleapis.com/v1beta/openai/
+              - key: TRUELINE_SUMMARY_API_KEY
+                sync: false
+              - key: TRUELINE_SUMMARY_MODEL
+                value: gemini-3.1-flash-lite
+              - key: TRUELINE_SUMMARY_TIMEOUT_SECONDS
+                value: "120"
+              - key: TRUELINE_CORRECTION_PROVIDER
+                value: gemini
+              - key: TRUELINE_CORRECTION_BASE_URL
+                value: https://generativelanguage.googleapis.com/v1beta/openai/
+              - key: TRUELINE_CORRECTION_API_KEY
+                sync: false
+              - key: TRUELINE_CORRECTION_MODEL
+                value: gemini-3.1-flash-lite
+              - key: TRUELINE_CORRECTION_TIMEOUT_SECONDS
+                value: "120"
+              - key: TRUELINE_LOGO_PROVIDER
+                value: gemini
+              - key: TRUELINE_LOGO_BASE_URL
+                value: https://generativelanguage.googleapis.com/v1beta/openai/
+              - key: TRUELINE_LOGO_API_KEY
+                sync: false
+              - key: TRUELINE_LOGO_MODEL
+                value: gemini-3.1-flash-lite
+              - key: TRUELINE_LOGO_TIMEOUT_SECONDS
+                value: "120"
 
