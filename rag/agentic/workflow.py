@@ -6,6 +6,7 @@ import json
 import base64
 import os
 import re
+from decimal import Decimal, InvalidOperation
 from typing import Any, Literal, TypedDict
 
 from langchain_openai import ChatOpenAI
@@ -314,7 +315,9 @@ RULE_EXTRACTION_AGENT_INSTRUCTIONS = (
     "Each returned rule must include at least one citation copied from retrieved_evidence with exact "
     "source_id, version_id, chunk_id, and verbatim quote. A citation must directly support the returned "
     "statement. Never invent citations, metadata, page numbers, or quotes; omit any statement that cannot "
-    "be supported by a retrieved passage. Include only relevant evidence for the review document, not "
+    "be supported by a retrieved passage. For product facts, preserve exact product names and every "
+    "explicit price, currency, quantity, and unit from the excerpt; do not round or convert values. "
+    "Include only relevant evidence for the review document, not "
     "every passage. If no explicit relevant rule/fact is present, return an empty rules array."
 )
 
@@ -341,7 +344,10 @@ CLAIMS_AGENT_INSTRUCTIONS = (
     "tone, emotional register, clarity, formality, pressure tactics, or stylistic preferences; leave "
     "those exclusively to the tone specialist. Do not use another agent's results or raw retrieved "
     "context as evidence. Do not invent or infer policies, facts, or findings beyond extracted_rules. "
-    "For every finding, copy a citation attached to the relevant extracted rule exactly. Never invent "
+    "Compare each product name, price (including currency), and explicitly labeled quantity/unit in "
+    "the document against matching product_fact entries. Treat different currencies as different "
+    "values, and never compare facts across different product names. For every finding, copy a citation "
+    "attached to the relevant extracted rule exactly. Never invent "
     "metadata, source details, excerpts, or approved facts. A claim is contradicted only when an extracted "
     "approved fact directly conflicts "
     "and maps to VIOLATION; use PASSED only when evidence supports it, UNSUPPORTED when required "
@@ -438,6 +444,170 @@ _RULE_DOCUMENT_TYPES = {
     "product_fact": {"product_facts"},
 }
 
+_MONEY = re.compile(
+    r"(?P<currency>₹|INR\b|Rs\.?|USD\b|\$|EUR\b|€|GBP\b|£)\s*"
+    r"(?P<amount>\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)",
+    re.IGNORECASE,
+)
+_PRICE_CONTEXT = re.compile(
+    r"(?:price\s+(?:of|for)\s+(?P<after>.+?)\s*(?:is|at|:)?|"
+    r"(?P<before>.+?)\s+(?:(?:retail|list|selling)\s+)?price\s*(?:is|at|:)?|"
+    r"(?P<cost>.+?)\s+(?:costs?|is\s+priced\s+at|retails?\s+for))\s*$",
+    re.IGNORECASE,
+)
+_QUANTITY = re.compile(
+    r"(?P<before>.+?)\s+(?:size|volume|weight|net\s+contents?|pack\s+size|quantity)\s*(?:is|:)?\s*"
+    r"(?P<amount>\d+(?:,\d{3})*(?:\.\d+)?)\s*(?P<unit>millilit(?:er|re)s?|ml|lit(?:er|re)s?|l|"
+    r"milligram(?:s)?|mg|gram(?:s)?|g|kilogram(?:s)?|kg|ounce(?:s)?|oz|count|pieces?)\b",
+    re.IGNORECASE,
+)
+_PRODUCT_NAME = re.compile(r"\b(?:product\s+name|product)\s*(?:is|:|-)\s*(?P<value>[^.;!?\n]+)", re.IGNORECASE)
+
+
+def _normalized_currency(value: str) -> str:
+    token = value.casefold().replace(".", "").strip()
+    if token in {"₹", "inr", "rs"}:
+        return "INR"
+    if token in {"$", "usd"}:
+        return "USD"
+    if token in {"€", "eur"}:
+        return "EUR"
+    return "GBP"
+
+
+def _price_facts(text: str) -> list[dict[str, Any]]:
+    """Extract explicit product-price pairs without guessing absent currencies or values."""
+    facts: list[dict[str, Any]] = []
+    for money in _MONEY.finditer(text):
+        start = max(text.rfind(mark, 0, money.start()) for mark in ".!?\n") + 1
+        # The period in the common currency abbreviation "Rs." is not a sentence boundary.
+        while start and text[start - 1:start].casefold() == "." and text[max(0, start - 3):start - 1].casefold() == "rs":
+            start = max(text.rfind(mark, 0, start - 1) for mark in ".!?\n") + 1
+        ends = [position for mark in ".!?\n" if (position := text.find(mark, money.end())) >= 0]
+        end = min(ends) if ends else len(text)
+        segment = text[start:end]
+        leading_trim = len(segment) - len(segment.lstrip())
+        sentence = segment.strip()
+        local_start = money.start() - start - leading_trim
+        prefix = sentence[:local_start].strip(" \t,;:-")
+        context = _PRICE_CONTEXT.search(prefix)
+        if not context:
+            continue
+        subject = next((part for part in context.group("after", "before", "cost") if part), "")
+        subject = re.sub(r"^(?:the|our|this|product)\s+", "", subject.strip(), flags=re.IGNORECASE)
+        subject = re.sub(r"\s+(?:retail|list|selling)$", "", subject, flags=re.IGNORECASE).strip(" \t,;:-")
+        subject = re.sub(r"\s+product$", "", subject, flags=re.IGNORECASE).strip()
+        if not subject:
+            continue
+        try:
+            amount = format(Decimal(money.group("amount").replace(",", "")), "f")
+        except InvalidOperation:
+            continue
+        facts.append({
+            "kind": "price", "subject": subject,
+            "subject_key": " ".join(re.findall(r"[a-z0-9]+", subject.casefold())),
+            "value": amount, "currency": _normalized_currency(money.group("currency")),
+            "quote": sentence,
+        })
+    return facts
+
+
+def _other_exact_facts(text: str) -> list[dict[str, Any]]:
+    """Parse only explicitly labeled product names and quantities from source text."""
+    facts: list[dict[str, Any]] = []
+    for match in _QUANTITY.finditer(text):
+        subject = re.sub(r"^(?:the|our|this|product)\s+", "", match.group("before").strip(), flags=re.I)
+        try:
+            amount = format(Decimal(match.group("amount").replace(",", "")), "f")
+        except InvalidOperation:
+            continue
+        unit = match.group("unit").casefold()
+        unit = {"milliliter": "ml", "milliliters": "ml", "millilitre": "ml", "millilitres": "ml",
+                "liter": "l", "liters": "l", "litre": "l", "litres": "l",
+                "milligram": "mg", "milligrams": "mg", "gram": "g", "grams": "g",
+                "kilogram": "kg", "kilograms": "kg", "ounce": "oz", "ounces": "oz",
+                "piece": "count", "pieces": "count"}.get(unit, unit)
+        quote_start = max((text.rfind(mark, 0, match.start()) for mark in ".!?\n"), default=-1) + 1
+        quote_end = next((p for p in (text.find(mark, match.end()) for mark in ".!?\n") if p >= 0), len(text))
+        quote = text[quote_start:quote_end].strip()
+        if subject:
+            facts.append({"kind": "quantity", "subject": subject,
+                          "subject_key": " ".join(re.findall(r"[a-z0-9]+", subject.casefold())),
+                          "value": amount, "unit": unit, "quote": quote})
+    for match in _PRODUCT_NAME.finditer(text):
+        value = match.group("value").strip()
+        quote_start = max((text.rfind(mark, 0, match.start()) for mark in ".!?\n"), default=-1) + 1
+        quote_end = next((p for p in (text.find(mark, match.end()) for mark in ".!?\n") if p >= 0), len(text))
+        if value:
+            facts.append({"kind": "product_name", "subject": "product", "subject_key": "product",
+                          "value": " ".join(value.casefold().split()), "quote": text[quote_start:quote_end].strip()})
+    return facts
+
+
+def _exact_facts(text: str) -> list[dict[str, Any]]:
+    return _price_facts(text) + _other_exact_facts(text)
+
+
+def _attach_structured_facts(rule: dict[str, Any]) -> dict[str, Any]:
+    """Derive typed price data only from the exact, validated citation excerpt."""
+    if rule.get("kind") not in {"product_fact", "approved_claim"}:
+        return {**rule, "facts": []}
+    facts = []
+    for citation in rule.get("citations", []):
+        for fact in _exact_facts(citation.get("quote", "")):
+            facts.append({**fact, "citations": [citation]})
+    unique: list[dict[str, Any]] = []
+    seen = set()
+    for fact in facts:
+        key = (fact["kind"], fact["subject_key"], fact["value"], fact.get("currency"), fact.get("unit"), fact["quote"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(fact)
+    return {**rule, "facts": unique}
+
+
+def _compare_extracted_facts(
+    document_text: str, extracted_rules: list[dict[str, Any]], existing: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Add deterministic price outcomes for exact product/currency pairs in validated rules."""
+    approved = [fact for rule in extracted_rules for fact in rule.get("facts", []) if fact.get("citations")]
+    draft = _exact_facts(document_text)
+    generated: list[dict[str, Any]] = []
+    for fact in draft:
+        matches = [item for item in approved if item.get("kind") == fact.get("kind")
+                   and item.get("subject_key") == fact["subject_key"]]
+        if not matches:
+            continue
+        # Conflicting approved values for one product/currency are ambiguous; do not choose one.
+        value_key = lambda item: (item["value"], item.get("currency"), item.get("unit"))
+        values = {value_key(item) for item in matches}
+        if len(values) != 1:
+            continue
+        approved_fact = matches[0]
+        classification = "PASSED" if value_key(fact) == value_key(approved_fact) else "VIOLATION"
+        shown_document_value = f"{fact.get('currency') or ''} {fact['value']} {fact.get('unit') or ''}".strip()
+        shown_approved_value = f"{approved_fact.get('currency') or ''} {approved_fact['value']} {approved_fact.get('unit') or ''}".strip()
+        if fact["kind"] == "product_name":
+            shown_document_value, shown_approved_value = fact["value"], approved_fact["value"]
+        generated.append({
+            "document_quote": fact["quote"],
+            "claim": f"{fact['subject']} {fact['kind']} is {shown_document_value}; approved value is {shown_approved_value}.",
+            "status": "supported" if classification == "PASSED" else "contradicted",
+            "classification": classification,
+            "explanation": (
+                "The document price matches the explicitly approved product fact."
+                if classification == "PASSED" else
+                f"The document states {shown_document_value}, while the cited approved fact states {shown_approved_value}."
+            ),
+            "severity": "high" if classification == "VIOLATION" else "low",
+            "citations": approved_fact["citations"],
+            "citation_validation": {"status": "validated", "accepted_count": len(approved_fact["citations"]),
+                                   "rejected_count": 0, "rejected_reasons": []},
+            "fact_check": f"deterministic_{fact['kind']}_comparison",
+        })
+    replaced_quotes = {item["document_quote"] for item in generated}
+    return [item for item in existing if item.get("document_quote") not in replaced_quotes] + generated
+
 
 def _normalize_extraction_result(
     result: dict[str, Any], evidence: list[dict[str, Any]], *, brand_id: str,
@@ -468,10 +638,10 @@ def _normalize_extraction_result(
         ]
         if not citations or not str(raw.get("statement", "")).strip():
             continue
-        candidates.append({
+        candidates.append(_attach_structured_facts({
             "kind": raw["kind"], "statement": str(raw["statement"]).strip(),
             "citations": _dedupe_citations(citations),
-        })
+        }))
 
     unique: list[dict[str, Any]] = []
     by_key: dict[tuple[str, str], dict[str, Any]] = {}
@@ -705,6 +875,7 @@ def _same_finding_text(first: str, second: str) -> bool:
 
 def _normalize_claims_result(
     result: dict[str, Any], evidence: list[dict[str, Any]], *, brand_id: str, document_text: str,
+    extracted_rules: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if result.get("status") == "error":
         result["findings"] = []
@@ -742,6 +913,9 @@ def _normalize_claims_result(
             "VIOLATION": "contradicted", "PASSED": "supported",
             "UNSUPPORTED": "unsupported", "UNVERIFIED": "unverified",
         }[classification]
+    result["findings"] = _compare_extracted_facts(
+        document_text, extracted_rules or [], result.get("findings", []),
+    )
     result["classification"] = _aggregate_classification(
         [item.get("classification", "UNVERIFIED") for item in result.get("findings", [])],
         no_findings=("UNSUPPORTED" if result.get("status") == "insufficient_evidence" and not approved_sources
@@ -1035,7 +1209,7 @@ def run_agentic_review(
             )
             output = _normalize_claims_result(
                 output, evidence_json, brand_id=prepared.brand_id,
-                document_text=prepared.document.text,
+                document_text=prepared.document.text, extracted_rules=claim_rules,
             )
             output = _restrict_to_extracted_rule_citations(output, claim_rules, {"claim_rule", "approved_claim", "product_fact"})
             output["retrieval_status"] = extraction.get("retrieval_status", "complete")
@@ -1043,7 +1217,13 @@ def run_agentic_review(
                 output["classification"] = "CHECK_FAILED"
             return {"claims_evidence": evidence_json, "claims_result": output}
         except Exception as exc:
-            return {"claims_evidence": evidence_json, "claims_result": {"status": "error", "classification": "CHECK_FAILED", "findings": [], "notes": f"Claims model step failed ({type(exc).__name__})."}}
+            failed_result = {"status": "error", "classification": "CHECK_FAILED", "findings": [],
+                             "retrieval_status": extraction.get("retrieval_status", "complete"),
+                             "notes": f"Claims model step failed ({type(exc).__name__}); deterministic exact-fact comparisons were still applied."}
+            failed_result["findings"] = _compare_extracted_facts(
+                prepared.document.text, claim_rules, [],
+            )
+            return {"claims_evidence": evidence_json, "claims_result": failed_result}
 
     def logo_node(_state: ReviewState) -> dict[str, Any]:
         if not approved_logos:

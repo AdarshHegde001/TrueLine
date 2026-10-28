@@ -363,6 +363,67 @@ def test_extraction_accepts_only_current_retrieved_citations_and_adds_rule_ids()
     assert citation["page"] == 4
 
 
+def _price_review(approved_quote: str, review_text: str):
+    source = {**SOURCE, "chunk_text": approved_quote,
+              "location": {"page": 2, "char_start": 0, "char_end": len(approved_quote)}}
+    evidence = [{"sources": [source]}]
+    extracted = workflow._normalize_extraction_result({
+        "status": "complete", "rules": [{"kind": "product_fact", "statement": approved_quote,
+            "citations": [_citation(source, approved_quote)]}],
+    }, evidence, brand_id=BRAND)
+    claims = workflow._normalize_claims_result({
+        "status": "complete", "findings": [],
+    }, evidence, brand_id=BRAND, document_text=review_text,
+       extracted_rules=extracted["rules"])
+    return extracted, claims
+
+
+def test_approved_price_799_detects_review_price_699_with_valid_citation():
+    extracted, claims = _price_review(
+        "LeafLift retail price is ₹799.",
+        "LeafLift retail price is Rs. 699.",
+    )
+    assert extracted["rules"][0]["facts"][0]["value"] == "799"
+    assert extracted["rules"][0]["facts"][0]["currency"] == "INR"
+    finding = claims["findings"][0]
+    assert finding["classification"] == "VIOLATION"
+    assert finding["fact_check"] == "deterministic_price_comparison"
+    assert finding["citations"][0]["source_title"] == "Approved Product Facts"
+    assert finding["citations"][0]["version_number"] == 2
+    assert finding["citations"][0]["page"] == 2
+    assert finding["citations"][0]["quote"] == "LeafLift retail price is ₹799."
+
+
+def test_matching_price_passes_across_rupee_currency_formats():
+    _extracted, claims = _price_review(
+        "LeafLift retail price is INR 799.",
+        "LeafLift retail price is ₹799.",
+    )
+    assert claims["findings"][0]["classification"] == "PASSED"
+
+
+def test_price_comparison_does_not_equate_different_currencies_or_products():
+    _extracted, claims = _price_review(
+        "LeafLift retail price is INR 799.",
+        "LeafLift retail price is USD 799.\nOtherLift retail price is INR 699.",
+    )
+    assert len(claims["findings"]) == 1
+    assert claims["findings"][0]["classification"] == "VIOLATION"
+    assert "USD 799" in claims["findings"][0]["explanation"]
+
+
+def test_explicit_quantity_and_product_name_facts_are_structured_and_compared():
+    extracted, claims = _price_review(
+        "Product: LeafLift; LeafLift volume is 50 ml.",
+        "Product: LeafLft; LeafLft volume is 30 ml.",
+    )
+    fact_kinds = {fact["kind"] for fact in extracted["rules"][0]["facts"]}
+    assert {"product_name", "quantity"} <= fact_kinds
+    assert claims["findings"]
+    assert all(item["classification"] == "VIOLATION" for item in claims["findings"])
+    assert all(item["citations"][0]["page"] == 2 for item in claims["findings"])
+
+
 def test_review_graph_passes_extracted_rules_to_specialists_and_only_rules_to_summary(monkeypatch):
     document_text = "Nova increases customer retention by 20 percent."
     document = ParsedDocument(
