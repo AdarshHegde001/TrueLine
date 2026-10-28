@@ -22,10 +22,10 @@ from rag.retrieval.pipeline import PartialRetrievalError, retrieve_document_evid
 class Citation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    source_id: str
-    version_id: str
-    chunk_id: str
-    quote: str = Field(min_length=1)
+    source_id: str = Field(description="Exact source_id from a retrieved evidence item")
+    version_id: str = Field(description="Exact version_id from that retrieved evidence item")
+    chunk_id: str = Field(description="Exact chunk_id from that retrieved evidence item")
+    quote: str = Field(min_length=1, description="Verbatim excerpt copied from that retrieved chunk")
     source_title: str | None = None
     version_number: int | None = None
     page: int | None = None
@@ -37,7 +37,11 @@ class ToneFinding(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     document_quote: str = Field(min_length=1)
-    assessment: str = Field(description="A concise description of the tone issue")
+    assessment: str = Field(description="The reason this wording needs review, stated briefly")
+    explanation: str = Field(
+        default="",
+        description="A separate evidence-based explanation connecting the draft wording to the cited rule; do not restate assessment",
+    )
     severity: Literal["low", "medium", "high"] = "medium"
     classification: Literal["VIOLATION", "UNSUPPORTED", "UNVERIFIED", "PASSED", "CHECK_FAILED"] = "UNVERIFIED"
     rule_quote: str | None = Field(default=None, description="Exact source text stating the explicit rule, required for a violation")
@@ -211,7 +215,10 @@ def _json_result(
         raise ValueError(f"{schema.__name__} returned invalid structured output") from exc
 
 
-def _retrieve(prepared: PreparedReview, retriever: KnowledgeRetriever, document_types: tuple[str, ...]) -> tuple[EvidenceBundle, ...]:
+def _retrieve(
+    prepared: PreparedReview, retriever: KnowledgeRetriever, document_types: tuple[str, ...],
+) -> tuple[tuple[EvidenceBundle, ...], bool]:
+    """Return evidence plus an explicit flag for any failed/partial retrieval."""
     try:
         return retrieve_document_evidence(
             prepared.document,
@@ -219,11 +226,11 @@ def _retrieve(prepared: PreparedReview, retriever: KnowledgeRetriever, document_
             retriever=retriever,
             top_k=8,
             document_types=document_types,
-        )
+        ), False
     except PartialRetrievalError as exc:
-        return exc.completed
+        return exc.completed, True
     except RetrievalContractError:
-        return ()
+        return (), True
 
 
 def _select_logo_inputs(
@@ -265,6 +272,49 @@ def _select_logo_inputs(
 
 _CLASSIFICATIONS = {"VIOLATION", "UNSUPPORTED", "UNVERIFIED", "PASSED", "CHECK_FAILED"}
 
+TONE_AGENT_INSTRUCTIONS = (
+    "You are the tone and voice specialist. Your scope is strictly brand voice and style: "
+    "emotional register, formality, clarity, warmth, urgency or pressure tactics, and wording "
+    "that conflicts with explicit voice guidance. Do not assess whether factual/product claims "
+    "are true, supported, safe, legal, correctly priced, ranked, statistically substantiated, "
+    "or performance-related; leave those exclusively to the claims specialist. Do not repeat a "
+    "claim issue as a tone finding. For each tone finding, write assessment as the short reason "
+    "the wording needs review and explanation as a distinct connection between the draft wording "
+    "and the cited voice rule or evidence. Do not repeat or paraphrase assessment. For a VIOLATION, "
+    "describe how the wording conflicts with rule_quote. Cite only retrieved sources from "
+    "focused_evidence: use exact source_id, version_id, chunk_id, and a verbatim relevant excerpt. "
+    "Never invent metadata, rules, or quotes. Use VIOLATION only for direct conflict with an explicit "
+    "applicable tone/voice rule; require rule_quote to be an exact substring of the citation. Use "
+    "PASSED only for a specific supported tone check, UNVERIFIED for inconclusive evidence, "
+    "UNSUPPORTED when required voice guidance is absent, and CHECK_FAILED if the check cannot run. "
+    "If no tone issue is found, return no findings."
+)
+
+CLAIMS_AGENT_INSTRUCTIONS = (
+    "You are the factual claims and substantiation specialist. Your scope is strictly checkable "
+    "factual assertions: product identity/specifications, prices, performance or outcome promises, "
+    "comparative/ranking claims, customer statistics/testimonials, and whether substantiation or "
+    "approval is required or available. Use approved retrieved evidence, including guideline passages "
+    "that explicitly state facts, claims policies, or evidence requirements. Do not assess voice, "
+    "tone, emotional register, clarity, formality, pressure tactics, or stylistic preferences; leave "
+    "those exclusively to the tone specialist. Do not use another agent's results as evidence. For "
+    "every finding, cite the retrieved source that supports the assessment using its exact source_id, "
+    "version_id, chunk_id, and a verbatim relevant excerpt from focused_evidence. Never invent citations, "
+    "metadata, or approved facts. A claim is contradicted only when approved evidence directly conflicts "
+    "and maps to VIOLATION; use PASSED only when evidence supports it, UNSUPPORTED when required "
+    "substantiation is absent, UNVERIFIED when evidence is inconclusive, and CHECK_FAILED if the check "
+    "cannot run. Missing evidence is not proof of falsity. If no factual claim issue is found, return no findings."
+)
+
+SUMMARY_AGENT_INSTRUCTIONS = (
+    "You are the final review summarizer. Integrate the deterministic checks, tone findings, claims "
+    "findings, and logo observations together. Select only the IDs of the most important unique findings "
+    "from unique_findings_available_for_summary in selected_finding_ids; keep every VIOLATION selected. "
+    "Do not change an agent's scope, add claims, or alter classification, severity, excerpts, or citations. "
+    "Logo observations are not compliance decisions. The application renders the final summary from the "
+    "validated structured findings."
+)
+
 
 def _validate_citations(
     result: dict[str, Any],
@@ -290,16 +340,29 @@ def _validate_citations(
             if all(key):
                 allowed[key] = source
     for finding in result.get("findings", []):
+        requested = finding.get("citations", []) or []
         validated = []
-        for citation in finding.get("citations", []):
+        rejected_reasons: set[str] = set()
+        for citation in requested:
             key = (citation.get("source_id"), citation.get("version_id"), citation.get("chunk_id"))
             source = allowed.get(key)
             quote = citation.get("quote", "")
-            if not source or not quote or quote not in source.get("chunk_text", ""):
+            if not source:
+                rejected_reasons.add("source_not_in_retrieved_evidence")
+                continue
+            if not quote or quote not in source.get("chunk_text", ""):
+                rejected_reasons.add("excerpt_not_verbatim")
+                continue
+            # Retrieval only admits approved guidelines/facts. A document's user
+            # selected type does not change its source_type, so guidelines remain
+            # valid evidence for claim findings when they support the assessment.
+            if source.get("source_type") not in {"guideline", "approved_fact"}:
+                rejected_reasons.add("source_type_not_allowed")
                 continue
             if require_topical_overlap and not _has_topical_overlap(
                 quote, f"{finding.get('claim', '')} {finding.get('document_quote', '')}"
             ):
+                rejected_reasons.add("excerpt_not_relevant_to_finding")
                 continue
             location = source.get("location") or {}
             pages = location.get("pages") or ([location["page"]] if location.get("page") else [])
@@ -312,6 +375,12 @@ def _validate_citations(
                 "location": location,
             })
         finding["citations"] = _dedupe_citations(validated)
+        finding["citation_validation"] = {
+            "status": "validated" if validated else "rejected" if requested else "missing",
+            "accepted_count": len(finding["citations"]),
+            "rejected_count": max(0, len(requested) - len(finding["citations"])),
+            "rejected_reasons": sorted(rejected_reasons),
+        }
     return result
 
 
@@ -344,7 +413,7 @@ def _has_topical_overlap(evidence_quote: str, finding_text: str) -> bool:
     # If lexical comparison is not possible (e.g. a very short phrase), defer to
     # the model's semantic judgment; otherwise reject citations about another topic.
     overlap = finding_tokens & evidence_tokens
-    return not finding_tokens or not evidence_tokens or len(overlap) >= min(2, len(finding_tokens))
+    return not finding_tokens or not evidence_tokens or bool(overlap)
 
 
 def _fallback_classification(has_evidence: bool) -> str:
@@ -361,14 +430,19 @@ def _normalize_tone_result(
     result = _validate_citations(result, evidence, brand_id=brand_id)
     for finding in result.get("findings", []):
         if finding.get("document_quote") not in document_text:
+            accepted_count = len(finding.get("citations", []))
             finding["citations"] = []
+            finding["citation_validation"] = {
+                "status": "rejected", "accepted_count": 0,
+                "rejected_count": accepted_count,
+                "rejected_reasons": ["finding_quote_not_in_review_document"],
+            }
             finding["classification"] = "UNVERIFIED"
             continue
         classification = finding.get("classification", "UNVERIFIED")
         if classification not in _CLASSIFICATIONS:
             classification = "UNVERIFIED"
         if classification == "UNSUPPORTED":
-            finding["citations"] = []
             classification = "UNVERIFIED"
         if classification == "PASSED" and not finding["citations"]:
             classification = "UNVERIFIED"
@@ -379,12 +453,34 @@ def _normalize_tone_result(
             )
             if not finding["citations"] or not supported_by_explicit_rule:
                 classification = "UNVERIFIED"
+        assessment = str(finding.get("assessment") or "").strip()
+        explanation = str(finding.get("explanation") or "").strip()
+        if not explanation or _same_finding_text(assessment, explanation):
+            document_quote = str(finding.get("document_quote") or "").strip()
+            if classification == "VIOLATION" and finding.get("rule_quote"):
+                explanation = (
+                    f'The cited rule says “{finding["rule_quote"]}”; the draft says '
+                    f'“{document_quote}”, which conflicts with that requirement.'
+                )
+            elif finding["citations"]:
+                evidence_quote = finding["citations"][0].get("quote", "")
+                explanation = f'The retrieved source states “{evidence_quote}”; this is the evidence considered for the assessment.'
+            else:
+                explanation = "No relevant retrieved rule was cited to support this assessment, so it remains inconclusive."
+        finding["explanation"] = explanation
         finding["classification"] = classification
     result["classification"] = _aggregate_classification(
         [item.get("classification", "UNVERIFIED") for item in result.get("findings", [])],
         no_findings="PASSED" if result.get("status") == "complete" and evidence else "UNVERIFIED",
     )
     return result
+
+
+def _same_finding_text(first: str, second: str) -> bool:
+    """Detect empty or repeated tone explanations without fuzzy rewriting."""
+    normalize = lambda value: " ".join(re.findall(r"[a-z0-9]+", value.casefold()))
+    left, right = normalize(first), normalize(second)
+    return not right or (bool(left) and (left == right or left in right or right in left))
 
 
 def _normalize_claims_result(
@@ -394,17 +490,20 @@ def _normalize_claims_result(
         result["findings"] = []
         result["classification"] = "CHECK_FAILED"
         return result
-    result = _validate_citations(
-        result, evidence, brand_id=brand_id, approved_facts_only=True,
-        require_topical_overlap=True,
-    )
+    result = _validate_citations(result, evidence, brand_id=brand_id, require_topical_overlap=True)
     approved_sources = [
         source for bundle in evidence for source in bundle.get("sources", [])
         if source.get("brand_id") == brand_id and source.get("source_type") == "approved_fact"
     ]
     for finding in result.get("findings", []):
         if finding.get("document_quote") not in document_text:
+            accepted_count = len(finding.get("citations", []))
             finding["citations"] = []
+            finding["citation_validation"] = {
+                "status": "rejected", "accepted_count": 0,
+                "rejected_count": accepted_count,
+                "rejected_reasons": ["finding_quote_not_in_review_document"],
+            }
             finding["classification"] = "UNVERIFIED"
             finding["status"] = "unverified"
             continue
@@ -418,8 +517,6 @@ def _normalize_claims_result(
         else:
             classification = _fallback_classification(bool(approved_sources))
         finding["classification"] = classification
-        if classification == "UNSUPPORTED":
-            finding["citations"] = []
         # Keep the established status values meaningful to existing API clients.
         finding["status"] = {
             "VIOLATION": "contradicted", "PASSED": "supported",
@@ -588,7 +685,7 @@ def _render_summary(
         lines = ["## Unique findings"]
     key_findings: list[str] = []
     for item in chosen:
-        title = f"{item['category']} · {item['classification']} · {item['severity']} severity"
+        title = f"{item['category']} · {item['severity']} severity"
         subject = item["subject"].replace("\n", " ").strip()
         explanation = item["explanation"].replace("\n", " ").strip()
         quote = item.get("document_quote")
@@ -626,35 +723,66 @@ def run_agentic_review(
     approved_logos = approved_logos or []
 
     def tone_node(state: ReviewState) -> dict[str, Any]:
-        evidence = _retrieve(prepared, retriever, ("tone_of_voice", "brand_guidelines", "glossary"))
+        evidence, retrieval_failed = _retrieve(prepared, retriever, ("tone_of_voice", "brand_guidelines", "glossary"))
         evidence_json = [item.model_dump(mode="json") for item in evidence]
+        retrieval_note = (
+            "Evidence retrieval failed for one or more passages; this agent's result may be incomplete."
+            if retrieval_failed else ""
+        )
+        if retrieval_failed and not evidence:
+            return {"tone_evidence": evidence_json, "tone_result": {
+                "status": "error", "classification": "CHECK_FAILED", "findings": [],
+                "retrieval_status": "failed", "notes": retrieval_note,
+            }}
         try:
             output = _json_result(
                 _chat("tone"), ToneResult,
-                SYSTEM_INSTRUCTION + " You are the tone judge. Compare only against explicit tone/brand rules in the retrieved evidence. Use VIOLATION only when the submitted wording directly conflicts with a specific explicit rule; include rule_quote as an exact substring of the cited source quote. Use PASSED only for a specific check that the evidence confirms. Use UNVERIFIED when relevant evidence is inconclusive, and UNSUPPORTED when required evidence is absent. Never infer a rule from a general impression. Every VIOLATION requires an exact relevant citation; otherwise downgrade it. If the check cannot run, use CHECK_FAILED.",
+                SYSTEM_INSTRUCTION + " " + TONE_AGENT_INSTRUCTIONS,
                 {"review_context": prepared.ai_context.model_dump(mode="json"), "focused_evidence": evidence_json},
             )
             output = _normalize_tone_result(
                 output, evidence_json, brand_id=prepared.brand_id,
                 document_text=prepared.document.text,
             )
+            if retrieval_failed:
+                output["classification"] = "CHECK_FAILED"
+                output["retrieval_status"] = "failed"
+                output["notes"] = " ".join(filter(None, (output.get("notes", ""), retrieval_note)))
+            else:
+                output["retrieval_status"] = "complete"
             return {"tone_evidence": evidence_json, "tone_result": output}
         except Exception as exc:
             return {"tone_evidence": evidence_json, "tone_result": {"status": "error", "classification": "CHECK_FAILED", "findings": [], "notes": f"Tone model step failed ({type(exc).__name__})."}}
 
     def claims_node(state: ReviewState) -> dict[str, Any]:
-        evidence = _retrieve(prepared, retriever, ("approved_claims", "product_facts", "brand_guidelines", "legal_compliance"))
+        evidence, retrieval_failed = _retrieve(prepared, retriever, ("approved_claims", "product_facts", "brand_guidelines", "legal_compliance"))
         evidence_json = [item.model_dump(mode="json") for item in evidence]
+        retrieval_note = (
+            "Evidence retrieval failed for one or more passages; this agent's result may be incomplete."
+            if retrieval_failed else ""
+        )
+        if retrieval_failed and not evidence:
+            return {"claims_evidence": evidence_json, "claims_result": {
+                "status": "error", "classification": "CHECK_FAILED", "findings": [],
+                "retrieval_status": "failed", "notes": retrieval_note,
+            }}
         try:
             output = _json_result(
                 _chat("claims"), ClaimsResult,
-                SYSTEM_INSTRUCTION + " You are the claims verifier. Extract checkable claims and compare them only with approved facts. Classify a claim as contradicted only when retrieved approved evidence directly conflicts; this maps to VIOLATION and requires an exact, relevant approved_fact citation. Use supported only when approved evidence supports it (maps to PASSED). Use unsupported when required approved evidence is absent, and unverified when available evidence is inconclusive. Never infer falsehood from missing evidence. A failed check is CHECK_FAILED.",
-                {"review_context": prepared.ai_context.model_dump(mode="json"), "focused_evidence": evidence_json, "tone_agent": state.get("tone_result", {})},
+                SYSTEM_INSTRUCTION + " " + CLAIMS_AGENT_INSTRUCTIONS,
+                {"review_context": prepared.ai_context.model_dump(mode="json"), "focused_evidence": evidence_json},
             )
-            return {"claims_evidence": evidence_json, "claims_result": _normalize_claims_result(
+            output = _normalize_claims_result(
                 output, evidence_json, brand_id=prepared.brand_id,
                 document_text=prepared.document.text,
-            )}
+            )
+            if retrieval_failed:
+                output["classification"] = "CHECK_FAILED"
+                output["retrieval_status"] = "failed"
+                output["notes"] = " ".join(filter(None, (output.get("notes", ""), retrieval_note)))
+            else:
+                output["retrieval_status"] = "complete"
+            return {"claims_evidence": evidence_json, "claims_result": output}
         except Exception as exc:
             return {"claims_evidence": evidence_json, "claims_result": {"status": "error", "classification": "CHECK_FAILED", "findings": [], "notes": f"Claims model step failed ({type(exc).__name__})."}}
 
@@ -749,7 +877,7 @@ def run_agentic_review(
         try:
             output = _json_result(
                 _chat("summary"), SummaryResult,
-                SYSTEM_INSTRUCTION + " You are the final summarizer. Do not write new prose claims. Select only the IDs of the most important unique findings from unique_findings_available_for_summary in selected_finding_ids; keep every VIOLATION selected. Do not alter classification, severity, excerpts, or citations. Logo observations are not compliance decisions. The application will render the final summary from validated structured findings.",
+                SYSTEM_INSTRUCTION + " " + SUMMARY_AGENT_INSTRUCTIONS,
                 payload,
             )
             selected_ids = output.get("selected_finding_ids", [])

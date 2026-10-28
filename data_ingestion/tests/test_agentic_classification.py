@@ -69,6 +69,8 @@ def test_wrong_or_irrelevant_citation_downgrades_claim_instead_of_asserting_viol
     assert finding["classification"] == "UNVERIFIED"
     assert finding["status"] == "unverified"
     assert finding["citations"] == []
+    assert finding["citation_validation"]["status"] == "rejected"
+    assert "excerpt_not_relevant_to_finding" in finding["citation_validation"]["rejected_reasons"]
 
 
 def test_unretrieved_source_and_nonverbatim_excerpt_are_never_returned_as_citations():
@@ -100,6 +102,60 @@ def test_supported_claim_with_cited_approved_fact_is_passed():
     assert result["findings"][0]["classification"] == "PASSED"
 
 
+def test_relevant_guideline_citation_is_preserved_for_claims_and_keeps_page_metadata():
+    guideline = {
+        **SOURCE,
+        "source_type": "guideline",
+        "chunk_text": "LeafLift retail price is KTR) 699 on page 2.",
+        "location": {"page": 2, "char_start": 0, "char_end": 44},
+    }
+    result = workflow._normalize_claims_result({
+        "status": "complete", "findings": [{
+            "document_quote": "LeafLift is priced at 699.",
+            "claim": "LeafLift is priced at 699.",
+            "status": "contradicted", "explanation": "The approved guideline gives a different price.",
+            "citations": [_citation(guideline, guideline["chunk_text"])],
+        }],
+    }, [{"sources": [guideline]}], brand_id=BRAND,
+        document_text="LeafLift is priced at 699.")
+
+    finding = result["findings"][0]
+    assert finding["classification"] == "VIOLATION"
+    assert finding["citation_validation"]["status"] == "validated"
+    citation = finding["citations"][0]
+    assert citation["source_id"] == guideline["source_id"]
+    assert citation["source_title"] == "Approved Product Facts"
+    assert citation["version_number"] == 2
+    assert citation["page"] == 2
+    assert citation["quote"] == guideline["chunk_text"]
+
+
+def test_unavailable_retrieval_is_distinguished_from_empty_successful_retrieval():
+    document = ParsedDocument(
+        document_name="draft.txt", media_type="text/plain", text="Check this claim.",
+        segments=(ContentSegment(text="Check this claim.", start=0, end=17),),
+        parser="plain-text", parser_version="1",
+    )
+    prepared = SimpleNamespace(document=document, brand_id=BRAND)
+
+    class FailedRetriever:
+        def search_knowledge(self, _request):
+            from rag.retrieval.client import RetrievalContractError
+            raise RetrievalContractError("index unavailable")
+
+    evidence, failed = workflow._retrieve(prepared, FailedRetriever(), ("brand_guidelines",))
+    assert evidence == ()
+    assert failed is True
+
+    class EmptyRetriever:
+        def search_knowledge(self, request):
+            return KnowledgeSearchResponse(brand_id=request.brand_id, retrieval_method="vector", results=())
+
+    evidence, failed = workflow._retrieve(prepared, EmptyRetriever(), ("brand_guidelines",))
+    assert evidence and evidence[0].sources == ()
+    assert failed is False
+
+
 def test_claim_without_any_approved_evidence_is_unsupported():
     result = workflow._normalize_claims_result({
         "status": "insufficient_evidence", "findings": [{
@@ -109,6 +165,7 @@ def test_claim_without_any_approved_evidence_is_unsupported():
     }, [], brand_id=BRAND, document_text="Nova doubles retention.")
     assert result["findings"][0]["classification"] == "UNSUPPORTED"
     assert result["findings"][0]["status"] == "unsupported"
+    assert result["findings"][0]["citation_validation"]["status"] == "missing"
 
 
 def test_claim_quote_not_present_in_reviewed_document_is_unverified():
@@ -130,12 +187,17 @@ def test_tone_violation_requires_explicit_rule_quote_inside_valid_citation():
         "status": "complete", "findings": [{
             "document_quote": "Guaranteed results for everyone.",
             "assessment": "The wording conflicts with the explicit guidance.",
+            "explanation": "The wording conflicts with the explicit guidance.",
             "severity": "high", "classification": "VIOLATION",
             "rule_quote": "Avoid the phrase 'guaranteed results' in marketing copy.",
             "citations": [_citation(source, source["chunk_text"])],
         }],
     }, evidence, brand_id=BRAND, document_text="Guaranteed results for everyone.")
-    assert result["findings"][0]["classification"] == "VIOLATION"
+    finding = result["findings"][0]
+    assert finding["classification"] == "VIOLATION"
+    assert finding["assessment"] != finding["explanation"]
+    assert "Avoid the phrase 'guaranteed results'" in finding["explanation"]
+    assert "Guaranteed results for everyone." in finding["explanation"]
 
     result["findings"][0]["rule_quote"] = "Always use cheerful language."
     downgraded = workflow._normalize_tone_result(
@@ -193,11 +255,34 @@ def test_duplicate_summary_items_collapse_but_distinct_claims_in_same_sentence_r
     candidates = workflow._summary_candidates(prepared, {"findings": []}, claims)
     assert len(candidates) == 2
     summary, key_findings = workflow._render_summary(candidates, selected_ids=["invented-id"])
-    assert summary.count("### Claims · VIOLATION") == 2
+    assert summary.count("### Claims · high severity") == 2
+    assert "VIOLATION" not in summary
     assert "Approved Product Facts, v2, page 4" in summary
     assert "Nova doubles retention." in summary and "Nova is fast." in summary
     assert "invented-id" not in summary
     assert len(key_findings) == 2
+
+
+def test_specialist_prompts_are_scoped_and_summary_candidates_combine_agents():
+    assert "Do not assess whether factual/product claims" in workflow.TONE_AGENT_INSTRUCTIONS
+    assert "leave those exclusively to the claims specialist" in workflow.TONE_AGENT_INSTRUCTIONS
+    assert "Do not assess voice, tone" in workflow.CLAIMS_AGENT_INSTRUCTIONS
+    assert "leave those exclusively to the tone specialist" in workflow.CLAIMS_AGENT_INSTRUCTIONS
+    assert "tone findings, claims findings, and logo observations together" in workflow.SUMMARY_AGENT_INSTRUCTIONS
+
+    prepared = SimpleNamespace(deterministic=SimpleNamespace(findings=()))
+    tone = {"findings": [{
+        "assessment": "Avoid pressure phrasing.", "classification": "VIOLATION",
+        "severity": "medium", "explanation": "Conflicts with the voice rule.",
+        "document_quote": "Buy now before it disappears!", "citations": [],
+    }]}
+    claims = {"findings": [{
+        "claim": "The product doubles growth.", "classification": "UNSUPPORTED",
+        "severity": "high", "explanation": "No approved substantiation was retrieved.",
+        "document_quote": "Doubles growth.", "citations": [],
+    }]}
+    candidates = workflow._summary_candidates(prepared, tone, claims)
+    assert {item["category"] for item in candidates} == {"Tone", "Claims"}
 
 
 def test_overall_classification_includes_deterministic_and_all_agent_results():
