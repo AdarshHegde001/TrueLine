@@ -167,17 +167,28 @@ class ModelSettings(BaseModel):
     timeout: float = 120
 
 
+DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite"
+
+
 def _settings(agent: str) -> ModelSettings:
     prefix = f"TRUELINE_{agent.upper()}_"
     def configured(name: str, fallback: str) -> str:
         return os.getenv(name, "").strip() or fallback
 
-    provider = configured(prefix + "PROVIDER", "ollama")
-    default_base = "http://localhost:11434/v1" if provider == "ollama" else ""
+    provider = configured(prefix + "PROVIDER", "gemini")
+    default_base = (
+        "http://localhost:11434/v1" if provider == "ollama"
+        else DEFAULT_GEMINI_BASE_URL if provider == "gemini"
+        else ""
+    )
     default_key = "ollama" if provider == "ollama" else ""
     return ModelSettings(
         provider=provider,
-        model=configured(prefix + "MODEL", "qwen3:8b"),
+        model=configured(
+            prefix + "MODEL",
+            DEFAULT_GEMINI_MODEL if provider == "gemini" else "qwen3:8b",
+        ),
         base_url=configured(prefix + "BASE_URL", default_base),
         api_key=configured(prefix + "API_KEY", default_key),
         timeout=float(configured(prefix + "TIMEOUT_SECONDS", "120")),

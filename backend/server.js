@@ -13,6 +13,11 @@ import multer from 'multer';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
 dotenv.config({ path: path.join(__dirname, '.env') });
+// Render mounts attached disks under /var/data. Use it automatically so
+// dashboard-created services need no extra asset-path environment variable.
+if (!process.env.TRUELINE_ASSET_DIR && existsSync('/var/data')) {
+  process.env.TRUELINE_ASSET_DIR = '/var/data/assets';
+}
 const app = express();
 const port = Number(process.env.PORT || 3001);
 const organizationBrandId = process.env.TRUELINE_BRAND_ID || 'brand_lumina';

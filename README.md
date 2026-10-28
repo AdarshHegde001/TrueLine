@@ -234,11 +234,34 @@ For a lightweight plumbing-only local run, `INGESTION_EMBEDDER=fake` selects a d
 
 ### Deploy on Render
 
-Use Render's Blueprint flow with `render.yaml` on the `production` branch. It places resources in the `TrueLine` project under its `production` environment. It creates one Docker web service from the repository-root context and `backend/Dockerfile`; that image builds the Vite frontend and Express serves its files and API from the same origin. The Blueprint also creates managed PostgreSQL 16 with pgvector enabled by the existing migration, plus a persistent disk for extracted reference images. The Python worker applies database migrations when it starts. The Blueprint wires `DATABASE_URL` to Render Postgres; you do not need to configure the Compose `db` hostname in Render. It creates a new empty database: local Compose data is not copied, so upload the approved reference resources again after deployment.
+Create a **Web Service** from the `production` branch in the Render Dashboard. Configure it to use Docker, Dockerfile path `backend/Dockerfile`, and Docker context `.` (the repository root). The Docker image builds the Vite frontend, and Express serves its files and the API from the same origin. Set the health check path to `/api/health`. Attach a persistent disk mounted at `/var/data` for extracted reference PDF images; the backend detects this mount and uses `/var/data/assets` automatically. The Python worker applies database migrations on startup, including `CREATE EXTENSION IF NOT EXISTS vector`. This is a dashboard-managed Web Service setup; Render does not apply `render.yaml` settings to a manually created service. `render.yaml` is only used when deploying/syncing through Render Blueprints.
 
-The Blueprint prompts for the unsynced API key variables when you first create it. Enter the Gemini embedding key as `GEMINI_EMBEDDING_API_KEY`, then enter the agent keys under `TRUELINE_EXTRACTION_API_KEY`, `TRUELINE_TONE_API_KEY`, `TRUELINE_CLAIMS_API_KEY`, `TRUELINE_SUMMARY_API_KEY`, `TRUELINE_CORRECTION_API_KEY`, and `TRUELINE_LOGO_API_KEY`. These are backend environment secrets; the Python worker inherits them from Express, and no key belongs in the frontend. If the Render service already exists, add the same key/value pairs under **trueline-api → Environment** in the Render Dashboard. No `VITE_API_BASE_URL` or `FRONTEND_ORIGIN` is needed for the production same-origin setup. Local Docker Compose continues to use its local Postgres container.
+#### Create the external PostgreSQL database
 
-The Blueprint uses the paid 2 GB backend plan and the smallest paid Postgres plan. At current listed pricing, that is about $25/month for the backend plus $6/month for Postgres, before storage/bandwidth or Gemini API usage; the 1 GB asset disk adds about $0.25/month. Check Render's current [pricing](https://render.com/pricing) before deploying, since rates and account credits can change. The 15-minute spin-down behavior applies to free web services; this paid backend stays available. The persistent disk protects extracted reference assets across restarts, while session cleanup still removes them at session end.
+Neon is a suitable free option for this prototype: its current Free plan includes 1 GB of database storage per project, and it supports pgvector. Free-tier limits and behavior can change, so check Neon's current [plan details](https://neon.com/pricing) before relying on it. The app needs ordinary PostgreSQL with pgvector; its migration creates the extension and schema.
+
+1. Create a Neon project and database. Pick a region near the Render service when possible.
+2. In Neon, use **Connect** to copy the connection string for the database. Keep the TLS parameters (Neon connection strings include `sslmode=require`). The app's migration will create the `vector` extension; if startup reports an extension permission error, run `CREATE EXTENSION IF NOT EXISTS vector;` in the Neon SQL Editor, then redeploy/restart the service.
+3. In the Render Web Service's **Environment** page, set the full connection string as `DATABASE_URL`. Never commit the URL to the repository.
+
+The free Neon database can scale to zero while idle, so the first request after inactivity may take longer while it wakes. Database storage and compute quotas are separate from Render's web-service credit and usage.
+
+The backend code defaults to Gemini Embedding 2 and Gemini `gemini-3.1-flash-lite` for all six agent roles, using Google's OpenAI-compatible endpoint for the agents. These non-secret defaults live in the Python backend and can still be overridden with environment variables. The Render asset-disk path is also detected by the backend. In the Web Service's **Environment** page, add the database URL and API keys below. The Python worker inherits the keys from Express. The frontend is served by this same service, so no `VITE_API_BASE_URL` or `FRONTEND_ORIGIN` is needed.
+
+| Variable | Value |
+| --- | --- |
+| `DATABASE_URL` | Neon connection string |
+| `GEMINI_EMBEDDING_API_KEY` | Your Gemini API key |
+| `TRUELINE_EXTRACTION_API_KEY` | Gemini API key for rule extraction |
+| `TRUELINE_TONE_API_KEY` | Gemini API key for tone review |
+| `TRUELINE_CLAIMS_API_KEY` | Gemini API key for claims review |
+| `TRUELINE_SUMMARY_API_KEY` | Gemini API key for the summary agent |
+| `TRUELINE_CORRECTION_API_KEY` | Gemini API key for document correction |
+| `TRUELINE_LOGO_API_KEY` | Gemini API key for logo review |
+
+You can use the same Gemini key for all agent roles or separate keys. Render supplies `PORT` automatically. Local Docker Compose continues to use its local Postgres container; local `backend/.env` values override the backend code defaults. The asset directory is `/var/data/assets` when the persistent disk is mounted at `/var/data`.
+
+The checked-in `render.yaml` documents a 2 GB backend plan and 1 GB persistent asset disk, but you must select the service plan and attach/configure the disk yourself when creating the Web Service in the Dashboard. Review Render's current [pricing](https://render.com/pricing) and your remaining credits before deploying. The disk protects extracted reference assets across restarts, while session cleanup still removes them at session end. Neon Free has its own storage and compute limits, independent of Render and Gemini usage.
 
 ## Agent API configuration
 
