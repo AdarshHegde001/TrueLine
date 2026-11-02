@@ -228,6 +228,10 @@ BGE-M3 produces normalized dense embeddings of **1,024 dimensions**, matching th
 
 Search combines dense vector distance and PostgreSQL full-text ranking, fused with Reciprocal Rank Fusion. Agent-specific document-type filters focus the tone and claims searches. The current migration does not enable an approximate-nearest-neighbor index; vector search scans the eligible rows, which is suitable for this small prototype dataset but should be revisited as the corpus grows.
 
+Retrieved child chunks also carry a bounded paragraph-level `parent_context`, derived from the immutable source text and stored offsets at query time. This adds surrounding rule context to the agents while keeping the child chunk as the citation target. It does not alter chunk text, stored vectors, model tags, or require reindexing.
+
+An optional cross-encoder reranking stage can reorder the hybrid candidate pool after RRF. It is disabled by default; set `TRUELINE_RERANKER_ENABLED=1` in `backend/.env` to enable it, and optionally set `TRUELINE_RERANKER_MODEL`. The default scorer is `BAAI/bge-reranker-v2-m3`, which is a separate relevance-scoring model, not an embedding model. Existing BGE-M3 vectors and their 1,024-dimensional schema remain unchanged. If the reranker cannot load or score candidates, search falls back to the original RRF ranking and marks the response `reranker_status: "fallback"`.
+
 For a lightweight plumbing-only local run, `INGESTION_EMBEDDER=fake` selects a deterministic fake embedder instead. Fake vectors are **not semantic embeddings**, must not be used to assess retrieval quality, and are incompatible with BGE-M3 vectors. Start a fresh session and re-upload the sources after changing the embedder; the prototype session reset clears the old index.
 
 ## Agent API configuration

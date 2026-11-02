@@ -101,6 +101,7 @@ def retrieve_document_evidence(
                 passage_span=passage_span,
                 passage_quote=document.text[passage_span.start : passage_span.end],
                 retrieval_method=response.retrieval_method,
+                reranker_status=response.reranker_status,
                 sources=response.results,
             )
         )

@@ -43,10 +43,13 @@ class RetrievedChunk(BaseModel):
     chunk_id: str = Field(min_length=1)
     chunk_text: str = Field(min_length=1)
     source_text: str | None = None
+    # Optional derived parent passage; citations must still quote chunk_text.
+    parent_context: str | None = None
     location: dict[str, Any] = Field(default_factory=dict)
     embedding_model: str | None = None
     rank: int = Field(ge=1)
     score: float | None = None
+    reranker_score: float | None = None
 
 
 class KnowledgeSearchResponse(BaseModel):
@@ -54,6 +57,7 @@ class KnowledgeSearchResponse(BaseModel):
 
     brand_id: str = Field(min_length=1)
     retrieval_method: Literal["hybrid", "vector", "keyword"]
+    reranker_status: Literal["disabled", "applied", "fallback"] = "disabled"
     results: tuple[RetrievedChunk, ...] = ()
 
     @model_validator(mode="after")
@@ -73,4 +77,5 @@ class EvidenceBundle(BaseModel):
     passage_span: TextSpan
     passage_quote: str
     retrieval_method: Literal["hybrid", "vector", "keyword"]
+    reranker_status: Literal["disabled", "applied", "fallback"] = "disabled"
     sources: tuple[RetrievedChunk, ...] = ()

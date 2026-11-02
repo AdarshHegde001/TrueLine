@@ -238,7 +238,9 @@ def _json_result(
         if len(blocks) > 1:
             human_content = blocks
     response = chat.invoke([
-        ("system", system + "\nReturn only a JSON object matching this schema: " + json.dumps(schema.model_json_schema())),
+        ("system", system + "\nIf retrieved evidence includes parent_context, use it only to understand surrounding scope. "
+         "Citations must be verbatim excerpts from the associated chunk_text, never parent_context alone. "
+         "Return only a JSON object matching this schema: " + json.dumps(schema.model_json_schema())),
         ("human", human_content),
     ])
     content = response.content
@@ -1220,13 +1222,13 @@ def _render_summary(
         lines = ["## Unique findings"]
     key_findings: list[str] = []
     for item in chosen:
-        title = f"{item['category']} · {item['severity']} severity"
+        title = f"{item['category']} - {item['severity']} severity"
         subject = item["subject"].replace("\n", " ").strip()
         explanation = item["explanation"].replace("\n", " ").strip()
         quote = item.get("document_quote")
-        lines.append(f"### {title}\n- **{subject}** — {explanation}")
+        lines.append(f"### {title}\n- **{subject}**: {explanation}")
         if quote:
-            lines.append(f"  - Draft excerpt: “{quote}”")
+            lines.append(f'  - Draft excerpt: "{quote}"')
         for citation in item.get("citations", []):
             source_title = citation.get("source_title") or citation.get("source_id") or "Approved source"
             version = citation.get("version_number")
@@ -1234,7 +1236,7 @@ def _render_summary(
             page = citation.get("pages") or ([citation["page"]] if citation.get("page") else [])
             page_label = f", page{'s' if len(page) > 1 else ''} {', '.join(map(str, page))}" if page else ""
             excerpt = citation.get("quote") or ""
-            lines.append(f"  - Evidence: “{excerpt}” — {source_title}, {version_label}{page_label}.")
+            lines.append(f'  - Evidence: "{excerpt}" - {source_title}, {version_label}{page_label}.')
         visual_reference = item.get("visual_reference")
         if visual_reference:
             reference_label = visual_reference.get("title") or visual_reference.get("logo_id")
@@ -1465,7 +1467,7 @@ def run_agentic_review(
             summary, key_findings = _render_summary(candidates, limitations=limitations)
             return {"summary_result": {
                 "status": "error", "classification": "CHECK_FAILED", "summary": summary,
-                "key_findings": key_findings, "human_review_required": True,
+                "key_findings": key_findings, "findings": candidates, "human_review_required": True,
                 "error_type": type(exc).__name__,
                 "notes": "Summary ranking failed; validated findings are shown without model prioritization.",
             }}
