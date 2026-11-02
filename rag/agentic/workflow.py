@@ -274,6 +274,13 @@ def _retrieve(
 
 MAX_AGENT_SEARCHES = 3
 AGENT_SEARCH_TOP_K = 5
+MAX_AGENT_SEARCHES_PER_CHUNK = 2
+REVIEW_CHUNK_MAX_CHARS = 12_000
+REVIEW_CHUNK_OVERLAP_CHARS = 600
+AGENT_MEMORY_CHUNKS = 4
+AGENT_MEMORY_FINDINGS_PER_CHUNK = 5
+AGENT_RULES_PER_CHUNK = 30
+AGENT_INITIAL_EVIDENCE_PER_CHUNK = 12
 
 
 def _rulebook_evidence(rules: list[dict[str, Any]], brand_id: str) -> list[dict[str, Any]]:
@@ -302,18 +309,23 @@ def _rulebook_evidence(rules: list[dict[str, Any]], brand_id: str) -> list[dict[
 def _run_agent_investigation(
     *, agent: str, schema: type[BaseModel], instructions: str, payload: dict[str, Any],
     retriever: KnowledgeRetriever, brand_id: str, document_types: tuple[str, ...],
+    max_searches: int = MAX_AGENT_SEARCHES,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], bool]:
-    """One review pass, at most three approved-source searches, and one reassessment."""
-    first = _json_result(_chat(agent), schema, SYSTEM_INSTRUCTION + " " + instructions, payload)
+    """Run bounded retrieve/reassess turns, keeping the current chunk in scope."""
+    current = _json_result(_chat(agent), schema, SYSTEM_INSTRUCTION + " " + instructions, payload)
     search_evidence: list[dict[str, Any]] = []
     failed = False
     seen: set[str] = set()
-    for raw_query in first.get("search_queries", [])[:MAX_AGENT_SEARCHES]:
-        query = " ".join(str(raw_query).split())[:500]
-        normalized = query.casefold()
-        if len(query) < 3 or normalized in seen:
-            continue
-        seen.add(normalized)
+    for search_index in range(max(0, max_searches)):
+        query = next((
+            " ".join(str(raw_query).split())[:500]
+            for raw_query in current.get("search_queries", [])[:3]
+            if len(" ".join(str(raw_query).split())) >= 3
+            and " ".join(str(raw_query).split()).casefold() not in seen
+        ), None)
+        if query is None:
+            break
+        seen.add(query.casefold())
         try:
             response = retriever.search_knowledge(KnowledgeSearchRequest(
                 brand_id=brand_id,
@@ -324,31 +336,251 @@ def _run_agent_investigation(
             ))
             search_evidence.append({
                 "query": query,
+                "status": "complete",
                 "retrieval_method": response.retrieval_method,
                 "sources": [source.model_dump(mode="json") for source in response.results],
             })
         except Exception:
             failed = True
-    if not search_evidence:
-        first["search_queries"] = []
-        return first, [], failed
-    second_payload = {
-        **payload,
-        "first_pass_assessment": first,
-        "agent_search_results": search_evidence,
-        "reassessment_instruction": (
-            "Reassess the full draft using the first pass and these approved search results. "
-            "Update, remove, or retain findings based on evidence. Do not make further searches. "
-            "Missing evidence is not proof of falsity."
-        ),
+            search_evidence.append({"query": query, "status": "failed", "sources": []})
+        turn_payload = {
+            **payload,
+            "previous_assessment": current,
+            "agent_search_results": search_evidence,
+            "reassessment_instruction": (
+                "Reassess only the current document chunk using your prior assessment and all approved "
+                "search results so far. Update, remove, or retain findings based on evidence. If another "
+                "focused source lookup is necessary, return one new search_queries item; otherwise return "
+                "an empty search_queries array. Missing evidence is not proof of falsity."
+            ),
+            "remaining_search_turns": max(0, max_searches - search_index - 1),
+        }
+        current = _json_result(
+            _chat(agent), schema,
+            SYSTEM_INSTRUCTION + " " + instructions +
+            " Continue the bounded retrieve/reassess loop only when evidence is still needed.",
+            turn_payload,
+        )
+    current["search_queries"] = []
+    return current, search_evidence, failed
+
+
+def _partition_review_document(document: Any) -> list[dict[str, Any]]:
+    """Split the parsed review text into overlapping, source-ordered windows.
+
+    Prefer parser-provided segment boundaries (paragraphs, table rows, etc.); use
+    sentence/whitespace boundaries for long blocks. Windows are slices of the
+    canonical text, so any quoted finding can still be checked against it.
+    """
+    text = document.text
+    if not text:
+        return []
+
+    segments = list(document.segments or ())
+    windows: list[dict[str, Any]] = []
+    start = 0
+    while start < len(text):
+        hard_end = min(start + REVIEW_CHUNK_MAX_CHARS, len(text))
+        end = hard_end
+        if hard_end < len(text):
+            min_end = start + REVIEW_CHUNK_MAX_CHARS // 2
+            segment_ends = [
+                segment.end for segment in segments
+                if min_end <= segment.end <= hard_end
+            ]
+            if segment_ends:
+                end = max(segment_ends)
+            else:
+                boundaries = []
+                for separator in ("\n\n", "\n", ". ", "! ", "? ", " "):
+                    index = text.rfind(separator, min_end, hard_end)
+                    if index >= min_end:
+                        boundaries.append(index + len(separator))
+                if boundaries:
+                    end = max(boundaries)
+        if end <= start:
+            end = hard_end
+
+        window_segments = [
+            segment.model_dump(mode="json") for segment in segments
+            if segment.start < end and segment.end > start
+        ]
+        window_text = text[start:end]
+        if window_text.strip():
+            pages = list(dict.fromkeys(
+                item["page"] for item in window_segments if item.get("page") is not None
+            ))
+            windows.append({
+                "chunk_id": f"review_chunk_{len(windows) + 1:04d}",
+                "index": len(windows) + 1,
+                "start": start,
+                "end": end,
+                "text": window_text,
+                "pages": pages,
+                "segments": window_segments,
+            })
+        if end >= len(text):
+            break
+        start = max(start + 1, end - REVIEW_CHUNK_OVERLAP_CHARS)
+    return windows
+
+
+def _chunk_relevant_rules(rules: list[dict[str, Any]], chunk_text: str) -> list[dict[str, Any]]:
+    """Keep the most lexically relevant extracted rules in this chunk's prompt."""
+    chunk_tokens = _content_tokens(chunk_text)
+    scored = []
+    for rule in rules:
+        rule_text = " ".join([
+            str(rule.get("statement", "")),
+            " ".join(str(citation.get("quote", "")) for citation in rule.get("citations", [])),
+            " ".join(str(fact.get("subject", "")) + " " + str(fact.get("value", ""))
+                     for fact in rule.get("facts", [])),
+        ])
+        overlap = chunk_tokens & _content_tokens(rule_text)
+        if overlap:
+            scored.append((len(overlap), rule))
+    scored.sort(key=lambda item: (-item[0], item[1].get("rule_id", "")))
+    return [rule for _, rule in scored[:AGENT_RULES_PER_CHUNK]]
+
+
+def _evidence_for_review_chunk(evidence: list[dict[str, Any]], chunk: dict[str, Any]) -> list[dict[str, Any]]:
+    """Limit initial RAG context to the best unique sources for this chunk."""
+    candidates: dict[tuple[str, str, str], tuple[float, dict[str, Any], dict[str, Any]]] = {}
+    for bundle in evidence:
+        span = bundle.get("passage_span") or {}
+        start, end = span.get("start"), span.get("end")
+        if isinstance(start, int) and isinstance(end, int):
+            if start >= chunk["end"] or end <= chunk["start"]:
+                continue
+        for source in bundle.get("sources", []):
+            key = (source.get("source_id", ""), source.get("version_id", ""), source.get("chunk_id", ""))
+            if not all(key):
+                continue
+            score = float(source.get("score") or 0.0)
+            if key not in candidates or score > candidates[key][0]:
+                candidates[key] = (score, bundle, source)
+    selected = sorted(candidates.values(), key=lambda item: (-item[0], item[2]["source_id"], item[2]["chunk_id"]))
+    return [
+        {key: bundle.get(key) for key in ("query", "retrieval_method", "passage_span", "passage_quote")}
+        | {"sources": [source]}
+        for _, bundle, source in selected[:AGENT_INITIAL_EVIDENCE_PER_CHUNK]
+    ]
+
+
+def _compact_agent_memory(
+    chunk: dict[str, Any], result: dict[str, Any], searched: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Create bounded, structured memory; full findings remain in an external buffer."""
+    findings = []
+    for finding in result.get("findings", [])[:AGENT_MEMORY_FINDINGS_PER_CHUNK]:
+        findings.append({
+            "document_quote": str(finding.get("document_quote", ""))[:180],
+            "issue": str(finding.get("assessment") or finding.get("claim") or "")[:180],
+            "classification": finding.get("classification", "UNVERIFIED"),
+        })
+    sources = []
+    queries = []
+    for item in searched:
+        queries.append(str(item.get("query", ""))[:160])
+        for source in item.get("sources", [])[:2]:
+            sources.append({
+                "source_id": source.get("source_id"),
+                "version_id": source.get("version_id"),
+                "chunk_id": source.get("chunk_id"),
+                "quote": str(source.get("chunk_text", ""))[:220],
+            })
+    return {
+        "chunk_id": chunk["chunk_id"],
+        "pages": chunk["pages"],
+        "findings": findings,
+        "retrieval_queries": queries[:2],
+        "retrieved_evidence": sources[:3],
     }
-    final = _json_result(
-        _chat(agent), schema,
-        SYSTEM_INSTRUCTION + " " + instructions + " Further investigation is closed; return the final assessment.",
-        second_payload,
-    )
-    final["search_queries"] = []
-    return final, search_evidence, failed
+
+
+def _run_chunked_agent_investigation(
+    *, agent: str, schema: type[BaseModel], instructions: str,
+    document: Any, channel: str | None, deterministic_checks: list[dict[str, Any]],
+    rules: list[dict[str, Any]], evidence: list[dict[str, Any]], retriever: KnowledgeRetriever,
+    brand_id: str, document_types: tuple[str, ...],
+) -> tuple[dict[str, Any], list[dict[str, Any]], bool]:
+    """Review every document window with a bounded ReAct-style retrieve/reassess pass."""
+    chunks = _partition_review_document(document)
+    findings_buffer: list[dict[str, Any]] = []
+    search_evidence: list[dict[str, Any]] = []
+    memory: list[dict[str, Any]] = []
+    failed_chunks: list[str] = []
+    search_failed = False
+
+    for chunk in chunks:
+        chunk_rules = _chunk_relevant_rules(rules, chunk["text"])
+        chunk_checks = []
+        for check in deterministic_checks:
+            span = check.get("span") or {}
+            if not span or (span.get("start", 0) < chunk["end"] and span.get("end", 0) > chunk["start"]):
+                chunk_checks.append(check)
+        review_document = {
+            "document_name": document.document_name,
+            "channel": channel,
+            "document_text": chunk["text"],
+            "segments": chunk["segments"],
+            "chunk": {
+                "chunk_id": chunk["chunk_id"], "index": chunk["index"],
+                "total": len(chunks), "start": chunk["start"], "end": chunk["end"],
+                "pages": chunk["pages"],
+            },
+        }
+        payload = {
+            "review_document": review_document,
+            "session_rulebook": chunk_rules,
+            "deterministic_results": chunk_checks,
+            "existing_retrieved_evidence": _evidence_for_review_chunk(evidence, chunk),
+            "conversation_memory": list(memory[-AGENT_MEMORY_CHUNKS:]),
+            "memory_instruction": (
+                "Assess the current chunk independently. Use conversation_memory only to avoid repeating "
+                "an already-buffered issue or retain cross-chunk context; do not infer a rule or finding "
+                "from memory. If no relevant extracted rule/evidence is present, request a focused RAG search."
+            ),
+        }
+        try:
+            result, searched, failed = _run_agent_investigation(
+                agent=agent, schema=schema, instructions=instructions, payload=payload,
+                retriever=retriever, brand_id=brand_id, document_types=document_types,
+                max_searches=MAX_AGENT_SEARCHES_PER_CHUNK,
+            )
+            search_failed = search_failed or failed
+            search_evidence.extend(searched)
+            if result.get("status") == "error":
+                failed_chunks.append(chunk["chunk_id"])
+                memory.append({"chunk_id": chunk["chunk_id"], "pages": chunk["pages"],
+                               "status": "check_failed", "findings": []})
+                continue
+            findings_buffer = _append_unique_agent_findings(
+                findings_buffer + result.get("findings", []), agent=agent,
+            )
+            memory.append(_compact_agent_memory(chunk, result, searched))
+        except Exception:
+            failed_chunks.append(chunk["chunk_id"])
+            memory.append({"chunk_id": chunk["chunk_id"], "pages": chunk["pages"],
+                           "status": "check_failed", "findings": []})
+
+    completed = len(chunks) - len(failed_chunks)
+    status = "error" if chunks and completed == 0 else "complete"
+    result = {
+        "status": status,
+        "classification": "CHECK_FAILED" if failed_chunks else "UNVERIFIED",
+        "findings": findings_buffer,
+        "search_queries": [],
+        "notes": "",
+        "coverage": {
+            "status": "failed" if completed == 0 and chunks else "partial" if failed_chunks else "complete",
+            "chunks_total": len(chunks), "chunks_completed": completed,
+            "failed_chunks": failed_chunks,
+        },
+    }
+    if failed_chunks:
+        result["notes"] = f"Could not complete {len(failed_chunks)} of {len(chunks)} document chunks."
+    return result, search_evidence, search_failed
 
 
 def _select_logo_inputs(
@@ -407,45 +639,68 @@ RULE_EXTRACTION_AGENT_INSTRUCTIONS = (
 )
 
 TONE_AGENT_INSTRUCTIONS = (
-    "You are the tone and voice specialist. Inspect the complete review document systematically, "
-    "starting with the supplied session rulebook and deterministic check results. Use applicable "
+    "You are a senior brand voice and tone auditor. Inspect each supplied document chunk carefully; "
+    "the application will provide every chunk in source order. Do not assume a chunk is the entire "
+    "document, and do not skip its middle or ending. Start with the supplied session rulebook and "
+    "only deterministic checks relevant to tone. Use applicable "
     "tone_rule, terminology, requirement, prohibition, exception, and visual_guideline entries. "
     "Your scope is brand voice and style: "
     "emotional register, formality, clarity, warmth, urgency/pressure, and wording that conflicts with "
-    "an explicit extracted voice rule. Do not assess factual truth, product claims, evidence, prices, "
-    "rankings, statistics, legality, or performance; those are outside your role. Do not invent, infer, "
+    "an explicit extracted voice rule. Treat global tone rules and explicit tone prohibitions as "
+    "high-priority, but apply them only within their stated scope. Do not assess factual truth, product "
+    "claims, substantiation, prices, rankings, statistics, legal or regulatory compliance, or "
+    "performance; those belong to the claims specialist. Do not restate a claims/compliance issue as "
+    "a tone finding, and do not assess logo/image compliance. Do not invent, infer, "
     "extend, or apply rules that are not in the rulebook or approved retrieved evidence. If a rule or "
     "draft passage needs further checking, return up to three short, focused search_queries for the "
     "bounded approved-source search tool. If no applicable rule supports a finding, do not assert a "
-    "violation. Cite only an exact citation object attached to the relevant "
-    "extracted rule; never manufacture source IDs, excerpts, versions, or pages. For each finding, use "
+    "violation. Cite only an exact citation object attached to the relevant extracted rule or returned "
+    "by the approved RAG tool; never manufacture source IDs, excerpts, versions, or pages. For each finding, use "
     "the exact draft text as document_quote. A VIOLATION requires direct conflict with the extracted "
-    "rule and an exact rule_quote found inside its citation excerpt. Return no finding when no tone issue "
-    "is supported."
+    "rule and an exact rule_quote found inside its citation excerpt. When this chunk has no relevant "
+    "rule, request focused RAG retrieval before concluding. Avoid generic style advice and do not make "
+    "different brand voices sound alike; preserve the brand's explicitly stated voice, audience, and "
+    "channel. Report each distinct tone issue once; do not duplicate an issue supported by the same "
+    "rule and draft wording, and do not combine separate rule breaches. Use conversation_memory only "
+    "to avoid repeating an existing issue or maintain a clear "
+    "cross-chunk reference. Return no finding when no tone issue is supported in this chunk."
 )
 
 CLAIMS_AGENT_INSTRUCTIONS = (
-    "You are the factual claims and substantiation specialist. Inspect the complete review document "
-    "systematically, starting with the supplied session rulebook and deterministic check results. "
+    "You are a claims, product-facts, substantiation, and source-grounded legal/regulatory compliance "
+    "review specialist. Inspect each supplied document chunk carefully; the application provides every "
+    "chunk in source order. Do not assume a chunk is the entire document, and do not skip its middle or "
+    "ending. Start with the supplied session rulebook and only deterministic checks relevant to "
+    "claims/compliance. "
     "Your scope is strictly checkable "
     "factual assertions: product identity/specifications, prices, performance or outcome promises, "
-    "comparative/ranking claims, customer statistics/testimonials, and substantiation. You receive only "
-    "the review document and session rulebook. Use claim_rule, approved_claim, product_fact, "
+    "comparative/ranking claims, customer statistics/testimonials, substantiation, and explicit "
+    "legal/regulatory or claim-compliance requirements in approved sources. Use only the current "
+    "review chunk, its supplied session rulebook, relevant deterministic results, and approved evidence returned "
+    "by the focused RAG tool. Use claim_rule, approved_claim, product_fact, "
     "requirement, prohibition, and exception entries. Do not assess voice, "
     "tone, emotional register, clarity, formality, pressure tactics, or stylistic preferences; leave "
-    "those exclusively to the tone specialist. Do not use another agent's results or raw retrieved "
-    "context as evidence. Do not invent or infer policies, facts, or findings beyond the rulebook and "
+    "those exclusively to the tone specialist. Do not restate a tone-only issue as a claims finding, "
+    "and do not assess logo/image compliance. Do not use another agent's results as evidence. Do not "
+    "provide independent legal advice or assert that a law or regulation applies unless an applicable "
+    "approved source is supplied. Do not invent or infer policies, facts, or findings beyond the rulebook and "
     "approved retrieved evidence. When relevant source evidence is missing or uncertain, return up to "
     "three short, focused search_queries for the bounded approved-source search tool. "
     "Compare each product name, price (including currency), and explicitly labeled quantity/unit in "
     "the document against matching product_fact entries. Treat different currencies as different "
     "values, and never compare facts across different product names. For every finding, copy a citation "
-    "attached to the relevant extracted rule exactly. Never invent "
+    "attached to the relevant extracted rule or returned by the approved RAG tool exactly. Never invent "
     "metadata, source details, excerpts, or approved facts. A claim is contradicted only when an extracted "
     "approved fact directly conflicts "
     "and maps to VIOLATION; use PASSED only when evidence supports it, UNSUPPORTED when required "
     "substantiation is absent, UNVERIFIED when evidence is inconclusive, and CHECK_FAILED if the check "
-    "cannot run. Missing evidence is not proof of falsity. If no factual claim issue is found, return no findings."
+    "cannot run. Missing evidence is not proof of falsity. If this chunk has no relevant rule or approved "
+    "fact, request focused RAG retrieval before concluding. Report each distinct claim/compliance issue "
+    "once; do not duplicate an issue supported by the same fact or rule, and do not combine separate "
+    "claim conflicts. Preserve distinctions among product names, "
+    "versions, quantities, currencies, price types, conditions, and claim scopes; do not homogenize "
+    "separate claims into a generic finding. Use conversation_memory only to avoid duplicate findings or "
+    "maintain cross-chunk context. Return no finding when no factual claim issue is supported in this chunk."
 )
 
 SUMMARY_AGENT_INSTRUCTIONS = (
@@ -1272,14 +1527,6 @@ def run_agentic_review(
     evidence_json = [item.model_dump(mode="json") for item in prepared.evidence]
     rulebook_evidence = _rulebook_evidence(rulebook_rules, prepared.brand_id)
     citation_evidence = evidence_json + rulebook_evidence
-    review_document = {
-        "document_name": prepared.document.document_name,
-        "document_text": prepared.document.text,
-        "channel": prepared.ai_context.channel,
-        "segments": [item.model_dump(mode="json") for item in prepared.document.segments],
-        "deterministic_checks": list(prepared.ai_context.deterministic_checks),
-    }
-
     def tone_node(state: ReviewState) -> dict[str, Any]:
         rules = state.get("extracted_rules", [])
         tone_rules = [item for item in rules if item.get("kind") in {
@@ -1287,14 +1534,11 @@ def run_agentic_review(
         }]
         extraction = state.get("extraction_result", {})
         try:
-            output, searched, search_failed = _run_agent_investigation(
+            output, searched, search_failed = _run_chunked_agent_investigation(
                 agent="tone", schema=ToneResult, instructions=TONE_AGENT_INSTRUCTIONS,
-                payload={
-                    "review_document": review_document,
-                    "session_rulebook": tone_rules,
-                    "deterministic_results": list(prepared.ai_context.deterministic_checks),
-                    "existing_retrieved_evidence": evidence_json,
-                },
+                document=prepared.document, channel=prepared.ai_context.channel,
+                deterministic_checks=list(prepared.ai_context.deterministic_checks),
+                rules=tone_rules, evidence=evidence_json,
                 retriever=retriever, brand_id=prepared.brand_id,
                 document_types=("tone_of_voice", "brand_guidelines", "glossary", "asset_rules", "other_reference"),
             )
@@ -1304,7 +1548,8 @@ def run_agentic_review(
             )
             output["retrieval_status"] = extraction.get("retrieval_status", "complete")
             output["tool_search_status"] = "failed" if search_failed else "complete"
-            if output["retrieval_status"] == "failed" or search_failed:
+            if (output["retrieval_status"] == "failed" or search_failed
+                    or output.get("coverage", {}).get("status") != "complete"):
                 output["classification"] = "CHECK_FAILED"
             output["search_count"] = len(searched)
             return {"tone_evidence": evidence_json + searched, "tone_result": output}
@@ -1318,14 +1563,11 @@ def run_agentic_review(
         }]
         extraction = state.get("extraction_result", {})
         try:
-            output, searched, search_failed = _run_agent_investigation(
+            output, searched, search_failed = _run_chunked_agent_investigation(
                 agent="claims", schema=ClaimsResult, instructions=CLAIMS_AGENT_INSTRUCTIONS,
-                payload={
-                    "review_document": review_document,
-                    "session_rulebook": claim_rules,
-                    "deterministic_results": list(prepared.ai_context.deterministic_checks),
-                    "existing_retrieved_evidence": evidence_json,
-                },
+                document=prepared.document, channel=prepared.ai_context.channel,
+                deterministic_checks=list(prepared.ai_context.deterministic_checks),
+                rules=claim_rules, evidence=evidence_json,
                 retriever=retriever, brand_id=prepared.brand_id,
                 document_types=("approved_claims", "product_facts", "brand_guidelines", "legal_compliance", "other_reference"),
             )
@@ -1333,9 +1575,14 @@ def run_agentic_review(
                 output, citation_evidence + searched, brand_id=prepared.brand_id,
                 document_text=prepared.document.text, extracted_rules=claim_rules,
             )
+            if output.get("status") == "error":
+                output["findings"] = _compare_extracted_facts(
+                    prepared.document.text, claim_rules, [],
+                )
             output["retrieval_status"] = extraction.get("retrieval_status", "complete")
             output["tool_search_status"] = "failed" if search_failed else "complete"
-            if output["retrieval_status"] == "failed" or search_failed:
+            if (output["retrieval_status"] == "failed" or search_failed
+                    or output.get("coverage", {}).get("status") != "complete"):
                 output["classification"] = "CHECK_FAILED"
             output["search_count"] = len(searched)
             return {"claims_evidence": evidence_json + searched, "claims_result": output}
@@ -1429,6 +1676,13 @@ def run_agentic_review(
             limitations.append("Tone-agent retrieval tool: CHECK_FAILED; additional brand-voice evidence may be incomplete.")
         if claims.get("tool_search_status") == "failed":
             limitations.append("Claims-agent retrieval tool: CHECK_FAILED; additional claim evidence may be incomplete.")
+        for label, result in (("Tone", tone), ("Claims", claims)):
+            coverage = result.get("coverage", {})
+            if coverage.get("status") in {"partial", "failed"}:
+                limitations.append(
+                    f"{label} review: CHECK_FAILED for {len(coverage.get('failed_chunks', []))} "
+                    f"of {coverage.get('chunks_total', 0)} document chunks."
+                )
         if not extracted_rules:
             limitations.append("No model-extracted rules are available from the active approved sources.")
         try:
@@ -1454,6 +1708,11 @@ def run_agentic_review(
                 [item["classification"] for item in candidates],
                 no_findings=no_findings,
             )
+            if any(
+                result.get("classification") == "CHECK_FAILED"
+                for result in (tone, claims, logo)
+            ) or extraction.get("classification") == "CHECK_FAILED":
+                summary_classification = "CHECK_FAILED"
             return {"summary_result": {
                 "status": output.get("status", "complete"),
                 "classification": summary_classification,

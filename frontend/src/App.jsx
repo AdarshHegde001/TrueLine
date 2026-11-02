@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 const API = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
+const MAX_REVIEW_FILE_BYTES = 50 * 1024 * 1024;
 const defaultDocumentType = 'brand_guidelines';
 const documentTypeLabels = {
   brand_guidelines: 'Brand guidelines',
@@ -365,6 +366,7 @@ function App() {
     event.preventDefault();
     if (!session) return notify('Start a session before reviewing a document.');
     if (!reviewFile) return notify('Choose a document to verify first.');
+    if (reviewFile.size > MAX_REVIEW_FILE_BYTES) return notify('Review documents may be up to 50 MB.');
     setReviewBusy(true);
     setReviewResult(null);
     setCorrectedDocx(null);
@@ -612,7 +614,7 @@ function App() {
             <div className="knowledge-guide-banner">
               <div className="kguide-step">
                 <div className="kguide-num">1</div>
-                <div><b>Choose files</b><small>PDF, DOCX, TXT or Markdown up to 15 MB</small></div>
+                <div><b>Choose files</b><small>PDF, DOCX, TXT or Markdown up to 25 MB</small></div>
               </div>
               <div className="kguide-arrow">→</div>
               <div className="kguide-step">
@@ -650,7 +652,7 @@ function App() {
                   onDrop={(e) => { e.preventDefault(); setDragOver(false); addKnowledgeFiles(e.dataTransfer.files); }}
                 >
                   <input type="file" multiple accept=".txt,.md,.pdf,.docx" onChange={(e) => { addKnowledgeFiles(e.target.files); e.target.value = ''; }} />
-                  <span className="drop-icon">↑</span><b>Choose multiple files or drag them here</b><small>PDF, DOCX, TXT or Markdown · up to 15 MB per file</small>
+                  <span className="drop-icon">↑</span><b>Choose multiple files or drag them here</b><small>PDF, DOCX, TXT or Markdown · up to 25 MB per file</small>
                 </label>
                 {knowledgeFiles.length > 0 && <div className="batch-list" aria-live="polite">
                   <div className="batch-list-heading"><b>{knowledgeFiles.length} file{knowledgeFiles.length === 1 ? '' : 's'} in this batch</b><span>{knowledgeFiles.filter((item) => item.status === 'ready').length} indexed</span></div>
@@ -744,7 +746,7 @@ function App() {
                   onDrop={(e) => { e.preventDefault(); setReviewDragOver(false); setReviewFile(e.dataTransfer.files?.[0] || null); setReviewResult(null); setCorrectedDocx(null); }}
                 >
                   <input type="file" accept=".txt,.md,.pdf,.docx,.png,.jpg,.jpeg,.webp" onChange={(e) => { setReviewFile(e.target.files?.[0] || null); setReviewResult(null); setCorrectedDocx(null); }} />
-                  <span className="drop-icon">↑</span><b>{reviewFile ? reviewFile.name : 'Choose a document or image to verify'}</b><small>PDF, DOCX, TXT, Markdown, PNG, JPEG, or WebP · up to 15 MB</small>
+                  <span className="drop-icon">↑</span><b>{reviewFile ? reviewFile.name : 'Choose a document or image to verify'}</b><small>PDF, DOCX, TXT, Markdown, PNG, JPEG, or WebP · up to 50 MB</small>
                 </label>
                 <p className="image-privacy-note">Text and tables are extracted locally. Only approved logo references and image candidates matched to them are sent to the logo agent; charts and unrelated images stay local.</p>
                 <div className="form-grid review-fields single-field"><label className="field"><span>Channel <em>Optional</em></span><select value={channel} onChange={(e) => setChannel(e.target.value)}><option value="advertisement">Advertisement</option><option value="social">Social media</option><option value="website">Website</option><option value="email">Email</option><option value="">No channel</option></select></label></div>

@@ -17,7 +17,8 @@ const app = express();
 const port = Number(process.env.PORT || 3001);
 const organizationBrandId = process.env.TRUELINE_BRAND_ID || 'brand_lumina';
 const organizationName = process.env.TRUELINE_ORGANIZATION_NAME || 'Lumina Studio';
-const maxFileBytes = 25 * 1024 * 1024;
+const maxSourceFileBytes = 25 * 1024 * 1024;
+const maxReviewFileBytes = 50 * 1024 * 1024;
 const documentTypes = new Set([
   'brand_guidelines', 'tone_of_voice', 'approved_claims', 'product_facts',
   'glossary', 'asset_rules', 'legal_compliance', 'other_reference',
@@ -29,9 +30,13 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '1mb' }));
 
-const upload = multer({
+const sourceUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: maxFileBytes, files: 1 },
+  limits: { fileSize: maxSourceFileBytes, files: 1 },
+});
+const reviewUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: maxReviewFileBytes, files: 1 },
 });
 const logoUpload = multer({
   storage: multer.memoryStorage(),
@@ -257,7 +262,7 @@ app.delete('/api/logos/:logoId', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-app.post('/api/knowledge', upload.single('file'), async (req, res, next) => {
+app.post('/api/knowledge', sourceUpload.single('file'), async (req, res, next) => {
   try {
     const documentType = req.body.documentType;
     if (!documentTypes.has(documentType)) {
@@ -285,7 +290,7 @@ app.post('/api/knowledge', upload.single('file'), async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-app.post('/api/review', upload.single('file'), async (req, res, next) => {
+app.post('/api/review', reviewUpload.single('file'), async (req, res, next) => {
   try {
     const file = filePayload(req.file, { allowImages: true });
     const review = await worker.call('review', {
@@ -298,7 +303,7 @@ app.post('/api/review', upload.single('file'), async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-app.post('/api/review/correct', upload.single('file'), async (req, res, next) => {
+app.post('/api/review/correct', reviewUpload.single('file'), async (req, res, next) => {
   try {
     const file = filePayload(req.file, { allowImages: true });
     let reviewData;
@@ -322,8 +327,13 @@ app.post('/api/review/correct', upload.single('file'), async (req, res, next) =>
 });
 
 app.use((error, _req, res, _next) => {
-  const status = error.status || (error instanceof multer.MulterError ? 400 : 500);
-  res.status(status).json({ error: error.message || 'Unexpected server error.' });
+  const status = error.status || (error instanceof multer.MulterError
+    ? (error.code === 'LIMIT_FILE_SIZE' ? 413 : 400)
+    : 500);
+  const message = error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE'
+    ? 'File is too large. Review documents may be up to 50 MB; reference uploads may be up to 25 MB.'
+    : error.message || 'Unexpected server error.';
+  res.status(status).json({ error: message });
 });
 
 const server = app.listen(port, () => {

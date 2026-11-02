@@ -14,6 +14,15 @@ from rag.retrieval.pipeline import PartialRetrievalError, retrieve_document_evid
 from rag.rules import DeterministicRuleEngine, rules_from_ingestion_records
 
 
+MAX_REVIEW_TEXT_CHARS = 300_000
+
+
+class ReviewDocumentTooLargeError(ValueError):
+    """Raised when parsed review text exceeds the bounded agent workflow limit."""
+
+    http_status = 413
+
+
 class PreparedReview(BaseModel):
     """Complete non-AI review input ready for a future LangGraph node."""
 
@@ -35,7 +44,7 @@ def prepare_review(
     channel: str | None,
     retriever: KnowledgeRetriever,
     top_k: int = 8,
-    max_context_chars: int = 120_000,
+    max_context_chars: int = 1_500_000,
 ) -> PreparedReview:
     """Run parsing-adjacent deterministic checks and retrieval, then assemble AI context.
 
@@ -43,6 +52,12 @@ def prepare_review(
     rule set; retrieval failures are kept explicit in the returned context so a
     future graph can block evidence-dependent agents rather than claiming success.
     """
+
+    if len(document.text) > MAX_REVIEW_TEXT_CHARS:
+        raise ReviewDocumentTooLargeError(
+            f"Extracted review text is {len(document.text):,} characters; "
+            f"the limit is {MAX_REVIEW_TEXT_CHARS:,}."
+        )
 
     rule_records = retriever.get_deterministic_rules(brand_id=brand_id, channel=channel)
     rules = rules_from_ingestion_records(rule_records)
@@ -57,6 +72,7 @@ def prepare_review(
             brand_id=brand_id,
             retriever=retriever,
             top_k=top_k,
+            max_queries=24,
         )
     except PartialRetrievalError as exc:
         evidence = exc.completed

@@ -35,7 +35,7 @@ def main() -> None:
             from rag.agentic.workflow import model_configuration, run_agentic_review
             from rag.agentic.rulebook import extract_reference_rules
             from rag.agentic.correction import generate_corrected_docx
-            from rag.review import prepare_review
+            from rag.review import MAX_REVIEW_TEXT_CHARS, ReviewDocumentTooLargeError, prepare_review
             from rag.retrieval.client import IngestionKnowledgeAdapter
             from trueline_ingestion import db, ingest
             from trueline_ingestion import logos
@@ -67,7 +67,8 @@ def main() -> None:
                 elif operation == "review":
                     result = _review(request, parse_document, prepare_review,
                                      IngestionKnowledgeAdapter, knowledge, db, ingest, settings,
-                                     run_agentic_review, sessions, logos)
+                                     run_agentic_review, sessions, logos,
+                                     MAX_REVIEW_TEXT_CHARS, ReviewDocumentTooLargeError)
                 elif operation == "correct":
                     result = _correct(request, parse_document, generate_corrected_docx,
                                       sessions, db, settings)
@@ -197,7 +198,7 @@ def _ingest(request, parse_document, extract_reference_rules, ingest, SourceCrea
 
 
 def _review(request, parse_document, prepare_review, Adapter, knowledge, db, ingest, settings,
-            run_agentic_review, sessions, logos):
+            run_agentic_review, sessions, logos, max_review_text_chars, too_large_error):
     brand_id = _session_brand_id(request, db, settings, sessions)
     data = base64.b64decode(request["fileBase64"], validate=True)
     with tempfile.TemporaryDirectory(prefix="trueline-review-") as image_root:
@@ -205,6 +206,11 @@ def _review(request, parse_document, prepare_review, Adapter, knowledge, db, ing
             data, document_name=request["fileName"], content_type=request.get("contentType"),
             store_images=True, asset_storage_dir=image_root,
         )
+        if len(document.text) > max_review_text_chars:
+            raise too_large_error(
+                f"Extracted review text is {len(document.text):,} characters; "
+                f"the limit is {max_review_text_chars:,}."
+            )
         with db.connect(settings) as conn:
             logo_records = logos.get_logo_assets(conn, brand_id)
             deterministic_rules = ingest.get_deterministic_rules(conn, brand_id, request.get("channel") or None)

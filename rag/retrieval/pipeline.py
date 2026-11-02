@@ -59,6 +59,7 @@ def retrieve_document_evidence(
     brand_id: str,
     retriever: KnowledgeRetriever,
     top_k: int = 8,
+    max_queries: int | None = None,
     source_types: tuple[str, ...] = ("guideline", "approved_fact"),
     document_types: tuple[str, ...] = (),
 ) -> tuple[EvidenceBundle, ...]:
@@ -69,9 +70,23 @@ def retrieve_document_evidence(
     document-wide context.
     """
 
+    passages = list(_query_passages(document))
+    if max_queries is not None:
+        if max_queries <= 0:
+            passages = []
+        elif len(passages) > max_queries:
+            if max_queries == 1:
+                passages = [passages[0]]
+            else:
+                # Keep retrieval distributed across the document instead of
+                # over-representing only its opening pages.
+                indexes = [round(i * (len(passages) - 1) / (max_queries - 1))
+                           for i in range(max_queries)]
+                passages = [passages[index] for index in indexes]
+
     bundles: list[EvidenceBundle] = []
     response_cache: dict[str, KnowledgeSearchResponse] = {}
-    for query, passage_span in _query_passages(document):
+    for query, passage_span in passages:
         normalized_query = " ".join(query.casefold().split())
         if not normalized_query:
             continue
