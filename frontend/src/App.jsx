@@ -777,8 +777,8 @@ function App() {
               <div className="panel result-panel ai-panel summary-panel"><div className="result-panel-heading"><div><span className="result-index ai-index">✦</span><h3>Final review summary</h3></div><span className="result-count">{summaryResult?.status === 'error' ? 'CHECK FAILED' : 'COMPLETED'}</span></div>
                 {summaryResult?.summary ? <MarkdownText className="markdown-summary">{summaryResult.summary}</MarkdownText> : <div className="ai-empty"><div className="ai-empty-icon">✦</div><b>{summaryResult?.status === 'error' ? 'Summary unavailable' : 'No summary returned'}</b><p>The deterministic results and specialist agent outputs are shown below.</p></div>}
                 {summaryResult?.key_findings?.length > 0 && <div className="summary-key-findings"><b>Key findings</b><ul>{summaryResult.key_findings.map((finding, index) => <li key={`${index}-${finding}`}>{finding}</li>)}</ul></div>}
-                {summaryResult?.summary && summaryResult?.status !== 'error' && <div className="correction-action">
-                  <div><b>Create a corrected draft?</b><p>The correction agent will use the original upload and the findings above to prepare a DOCX draft. Review it before use.</p></div>
+                {summaryResult?.summary && summaryResult?.findings?.length > 0 && <div className="correction-action">
+                  <div><b>Create a corrected draft?</b><p>{summaryResult?.status === 'error' ? 'Summary prioritization failed; the draft will use the validated findings shown above. Review it before use.' : 'The correction agent will use the original upload and the findings above to prepare a DOCX draft. Review it before use.'}</p></div>
                   {correctedDocx
                     ? <button className="primary-button" type="button" onClick={downloadCorrection}>Download corrected DOCX <b>↓</b></button>
                     : <button className="primary-button" type="button" onClick={generateCorrection} disabled={correctionBusy || reviewBusy}>{correctionBusy ? <><span className="spinner" /> Generating…</> : <>Generate corrected DOCX <b>→</b></>}</button>}
