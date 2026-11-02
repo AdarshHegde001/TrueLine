@@ -53,10 +53,13 @@ class RetrievedChunk(BaseModel):
     chunk_id: str
     chunk_text: str
     source_text: Optional[str] = None
+    # Derived from the exact source version at query time; never embedded or stored.
+    parent_context: Optional[str] = None
     location: dict[str, Any] = Field(default_factory=dict)
     embedding_model: Optional[str] = None
     rank: int
     score: Optional[float] = None
+    reranker_score: Optional[float] = None
 
 
 class KnowledgeSearchResponse(BaseModel):
@@ -66,6 +69,7 @@ class KnowledgeSearchResponse(BaseModel):
 
     brand_id: str
     retrieval_method: Literal["hybrid", "vector", "keyword"]
+    reranker_status: Literal["disabled", "applied", "fallback"] = "disabled"
     results: tuple[RetrievedChunk, ...] = ()
 
 

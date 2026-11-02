@@ -1,7 +1,9 @@
 """Read path: brand-scoped hybrid retrieval (PostgreSQL FTS + pgvector, fused by RRF)."""
 from __future__ import annotations
 
+import os
 import re
+from functools import lru_cache
 from typing import Optional
 
 import psycopg
@@ -14,6 +16,58 @@ from .ingest import get_deterministic_rules as _get_deterministic_rules
 from .models import KnowledgeSearchRequest, KnowledgeSearchResponse, RetrievedChunk
 
 RRF_K = 60
+PARENT_CONTEXT_MAX_CHARS = 2_400
+
+
+@lru_cache(maxsize=2)
+def _load_reranker(model_name: str):
+    """Load a scoring model separately from the BGE-M3 embedding model."""
+    from sentence_transformers import CrossEncoder
+
+    return CrossEncoder(model_name)
+
+
+def _parent_context(source_text: str, location: dict, max_chars: int = PARENT_CONTEXT_MAX_CHARS) -> str | None:
+    """Return the paragraph containing a child chunk, bounded for model context.
+
+    The child chunk and all persisted offsets remain unchanged. This is derived
+    from the immutable source text, so it needs no schema migration or reindex.
+    """
+    start = location.get("char_start")
+    end = location.get("char_end")
+    if not isinstance(start, int) or not isinstance(end, int) or not (0 <= start < end <= len(source_text)):
+        return None
+
+    paragraph_start = source_text.rfind("\n\n", 0, start)
+    paragraph_start = 0 if paragraph_start < 0 else paragraph_start + 2
+    paragraph_end = source_text.find("\n\n", end)
+    paragraph_end = len(source_text) if paragraph_end < 0 else paragraph_end
+    if paragraph_end - paragraph_start <= max_chars:
+        context = source_text[paragraph_start:paragraph_end].strip()
+        return context or None
+
+    # For unusually long paragraphs, retain the child and balanced nearby text.
+    max_chars = max(max_chars, end - start)
+    window_start = max(paragraph_start, start - (max_chars - (end - start)) // 2)
+    window_start = min(window_start, max(paragraph_start, paragraph_end - max_chars))
+    window_end = min(paragraph_end, window_start + max_chars)
+    return source_text[window_start:window_end].strip() or None
+
+
+def _rerank_candidates(query: str, candidates: list[dict], model_name: str) -> tuple[list[dict], list[float]]:
+    """Cross-encode the hybrid candidate pool; return ordered rows and scores."""
+    scorer = _load_reranker(model_name)
+    pairs = [(query, item["row"]["chunk_text"]) for item in candidates]
+    raw_scores = scorer.predict(pairs)
+    if hasattr(raw_scores, "reshape"):
+        raw_scores = raw_scores.reshape(-1).tolist()
+    elif not isinstance(raw_scores, (list, tuple)):
+        raw_scores = [raw_scores]
+    scores = [float(score) for score in raw_scores]
+    if len(scores) != len(candidates):
+        raise ValueError("reranker returned an unexpected number of scores")
+    ranked = sorted(zip(candidates, scores), key=lambda pair: (-pair[1], pair[0]["row"]["chunk_id"]))
+    return [item for item, _ in ranked], [score for _, score in ranked]
 
 # Brand scoping + approval/active/ready filters are in SQL for BOTH candidate queries.
 _FROM_WHERE = """
@@ -105,7 +159,19 @@ class KnowledgeService:
             e = fused.setdefault(r["chunk_id"], {"row": r, "score": 0.0})
             e["score"] += 1.0 / (RRF_K + rank)
 
-        ordered = sorted(fused.values(), key=lambda e: (-e["score"], e["row"]["chunk_id"]))[: req.top_k]
+        ordered = sorted(fused.values(), key=lambda e: (-e["score"], e["row"]["chunk_id"]))
+        reranker_status = "disabled"
+        reranker_scores: dict[str, float] = {}
+        if os.environ.get("TRUELINE_RERANKER_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"} and ordered:
+            model_name = os.environ.get("TRUELINE_RERANKER_MODEL", "BAAI/bge-reranker-v2-m3").strip()
+            try:
+                ordered, scores = _rerank_candidates(req.query, ordered, model_name)
+                reranker_scores = {item["row"]["chunk_id"]: score for item, score in zip(ordered, scores)}
+                reranker_status = "applied"
+            except Exception:
+                # The hybrid RRF order remains a valid and safe fallback.
+                reranker_status = "fallback"
+        ordered = ordered[: req.top_k]
         results = [
             RetrievedChunk(
                 source_id=e["row"]["source_id"], version_id=e["row"]["version_id"],
@@ -114,13 +180,16 @@ class KnowledgeService:
                 title=e["row"]["title"], version_number=e["row"]["version_number"],
                 chunk_id=e["row"]["chunk_id"], chunk_text=e["row"]["chunk_text"],
                 source_text=e["row"]["source_text"], location=e["row"]["location"] or {},
+                parent_context=_parent_context(e["row"]["source_text"], e["row"]["location"] or {}),
                 embedding_model=e["row"]["embedding_model"], rank=i,
                 score=round(e["score"], 6),
+                reranker_score=reranker_scores.get(e["row"]["chunk_id"]),
             )
             for i, e in enumerate(ordered, 1)
         ]
         return KnowledgeSearchResponse(
-            brand_id=req.brand_id, retrieval_method=method, results=tuple(results)
+            brand_id=req.brand_id, retrieval_method=method,
+            reranker_status=reranker_status, results=tuple(results)
         )
 
 

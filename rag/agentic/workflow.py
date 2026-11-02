@@ -238,7 +238,9 @@ def _json_result(
         if len(blocks) > 1:
             human_content = blocks
     response = chat.invoke([
-        ("system", system + "\nReturn only a JSON object matching this schema: " + json.dumps(schema.model_json_schema())),
+        ("system", system + "\nIf retrieved evidence includes parent_context, use it only to understand surrounding scope. "
+         "Citations must be verbatim excerpts from the associated chunk_text, never parent_context alone. "
+         "Return only a JSON object matching this schema: " + json.dumps(schema.model_json_schema())),
         ("human", human_content),
     ])
     content = response.content
