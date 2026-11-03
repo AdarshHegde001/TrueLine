@@ -2,7 +2,7 @@
   <img src="assets/truline_logo.png" alt="TrueLine logo" width="170" />
   <h1>TrueLine</h1>
   <p><strong>Evidence-grounded brand review and document correction.</strong></p>
-  <p>Manage approved guidance, review content for brand and claims issues, and make targeted, reviewable corrections.</p>
+  <p>Turn approved brand guidance into cited review findings and human-approved correction plans.</p>
   <p>
     <img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-2ea44f.svg" />
     <img alt="Python 3.11–3.12" src="https://img.shields.io/badge/Python-3.11--3.12-3776AB.svg?logo=python&logoColor=white" />
@@ -18,20 +18,40 @@
 
 ## What TrueLine does
 
-TrueLine helps teams review organization-authored content against approved brand guidance, claims, product facts, and other reference material. Teams add approved sources to a session, submit a draft, and receive a human-reviewable report with cited evidence. Deterministic checks and specialist AI agents cover terminology, tone, factual claims, and visual layout. A separate correction agent can make targeted edits to the original file and use approved-source retrieval only to resolve a specific reported finding.
+TrueLine is an evidence-first workspace for checking drafts against approved brand guidance, claims, product facts, and reference material. It combines deterministic checks with specialist agents, validates citations against retrieved source passages, and keeps reviewers in control of both the rules used for a review and any proposed corrections.
 
-The repository currently provides a local deployment with one configured organization and one active review session. It is suitable for development and evaluation; authentication, concurrent user sessions, and tenant isolation are not implemented yet.
+The current build supports an end-to-end review cycle for one configured organization and one active session at a time. It is ready for local development and evaluation; account management, access control, and concurrent multi-tenant sessions are not included.
+
+### Product capabilities
+
+- **Manage approved knowledge.** Upload and classify guidance, claims, facts, glossaries, compliance material, and logo references. Sources are versioned, indexed, and kept with their evidence and provenance.
+- **Review rules before agents run.** Inspect the extracted rules that apply to the chosen channel. All are included by default; discard individual rules for the current review without changing the approved source.
+- **See evidence with findings.** Deterministic checks and tone, claims, and visual agents return findings tied to the submitted draft, configured rules, and approved evidence where available. The visual agent reports supported layout problems and stays quiet about pages without findings.
+- **Choose which corrections to apply.** The Summary agent proposes safe, finding-specific corrections. Proposals are included by default and can be discarded individually. When requested, the backend packages the retained proposals and associated findings as YAML for the correction agent, which verifies its changes before returning a corrected file.
+
+### Contents
+
+- [Product workflow](#at-a-glance)
+- [Architecture and components](#architecture)
+- [Review workflow details](#review-workflow)
+- [Requirements and local setup](#requirements)
+- [Embedding, search, and agent configuration](#embedding-and-search-configuration)
+- [HTTP API](#http-api)
+- [Data model and session scope](#data-model-and-session-assumptions)
+- [Troubleshooting and development](#troubleshooting)
+- [Current limitations](#current-limitations)
+- [License](#license)
 
 ## At a glance
 
-1. Start a session. The API clears any previous session's indexed knowledge and creates a fresh review scope.
-2. Upload reference files and assign document types. Approved files are parsed, rule-extracted once, and indexed; extracted rules and original passages are stored against the approved source version. Upload approved logo references when logo comparison or replacement is needed.
-3. Upload a draft to review and optionally select its channel. The backend parses it, runs deterministic checks, and retrieves relevant passages.
-4. Tone and Claims agents inspect each draft-text chunk with applicable session rules, deterministic results, and retrieved evidence. The Visual Layout agent reviews available PDF page previews, embedded image assets, and approved logo references against retrieved visual guidance; it does not receive extracted page text. Agents can request bounded, focused RAG searches and reassess with the returned evidence.
-5. The backend validates and deduplicates deterministic, tone, claims, and visual findings in a per-review buffer. The Summary agent can prioritize only those findings; the application renders the report from the validated buffer.
-   The review badge reports `COMPLETED` or `ERROR`; finding classifications and any incomplete checks are shown separately.
-6. If the user requests a corrected version, the correction agent works only on validated findings from the final summary. It inspects the exact target, can search approved sources for that finding, stages an evidence-backed text edit or a supported PDF visual edit, and verifies the result. It can use approved logo assets already uploaded to the session. The backend applies only verified changes to the original DOCX, PDF, TXT, or Markdown file; unsupported or unsafe corrections remain unresolved for review.
-7. End the session when finished. The API deletes that session's sources, versions, chunks, and embeddings so a later session starts clean.
+1. **Create a session.** Start a fresh, temporary review workspace.
+2. **Add approved sources.** Upload and classify source files. TrueLine extracts evidence-linked rules, versions the source, and indexes its passages. Approved logo files can support visual comparison and PDF logo replacement.
+3. **Prepare the review.** Upload a draft, choose a channel, inspect the extracted rules applicable to that channel, and discard any rule that should not apply to this review.
+4. **Run the checks.** Deterministic checks run alongside tone, claims, and visual review. Agents use approved guidance and bounded, focused searches; source citations are validated before findings are kept. The visual agent reviews PDF page previews and approved logo references, and reports supported problems only.
+5. **Review the results.** The completed run opens a separate results page with the summary, deterministic checks, specialist findings, evidence, and incomplete-check notices. The Summary agent can order findings and propose corrections, but cannot change the validated findings.
+6. **Review proposed corrections.** Suggestions for eligible findings are included by default. Discard any suggestion that should not be sent to the correction agent.
+7. **Generate a corrected draft on request.** The backend builds a YAML plan from the retained proposals and their findings. The correction agent can inspect each target, retrieve evidence for that finding, make a supported edit, and verify it. Verified changes are applied to the original DOCX, PDF, TXT, or Markdown file; unresolved changes are reported for human review.
+8. **End the session.** Session sources, versions, chunks, embeddings, and local extracted reference assets are cleared.
 
 ## Architecture
 
@@ -63,8 +83,10 @@ flowchart LR
   CLAIMS --> BUF
   VISUAL --> BUF
   DET --> BUF
-  BUF --> SUM[Summary agent: prioritizes validated findings]
-  SUM -. User requests correction .-> CORRECT[Finding-scoped correction agent]
+  BUF --> SUM[Summary agent: orders findings + proposes fixes]
+  SUM --> HUMAN[Reviewer retains or discards proposals]
+  HUMAN -->|User requests correction| YAML[Backend builds YAML plan]
+  YAML --> CORRECT[Finding-scoped correction agent]
   CORRECT <-->|Finding-scoped approved-source lookup| RET
   CORRECT --> PATCH[Verified targeted patch]
   PATCH --> FILE[Corrected DOCX, PDF, TXT, or Markdown]
@@ -81,13 +103,13 @@ flowchart LR
 
 | Component | Responsibility |
 | --- | --- |
-| `frontend/` | React/Vite interface for sessions, approved reference files and logo assets, review results, and corrected drafts. Summary text is rendered as GitHub-flavored Markdown. |
+| `frontend/` | React/Vite interface for sessions, approved reference files and logo assets, pre-agent rule review, a separate results page, discardable correction proposals, and corrected drafts. Summary text is rendered as GitHub-flavored Markdown. |
 | `backend/` | Express HTTP API, multipart upload validation, session-aware requests, and a long-lived Python worker bridge. Loads `backend/.env`. |
 | `data_ingestion/` | PostgreSQL schema/migrations, source/version management, chunking, embeddings, hybrid search, and ephemeral session cleanup. |
 | `rag/parsing/` | Extracts text and location metadata from PDF, DOCX, Markdown, and plain text files. Sparse image-heavy PDF pages use adaptive Tesseract OCR. |
 | `rag/rules/` | Evaluates machine-checkable structured rules supplied with an ingested source. Natural-language extracted rules are kept in the separate evidence-linked rulebook and reviewed by specialist agents. |
 | `rag/retrieval/` | Adapts the ingestion search interface and retrieves evidence for review passages while preserving source and location information. |
-| `rag/agentic/` | Ingestion-time rulebook extraction, LangGraph tone/claims/visual/summary review, and the on-demand finding-scoped correction agent; model roles are configured independently. |
+| `rag/agentic/` | Ingestion-time rule extraction, LangGraph tone/claims/visual review and summary proposals, plus the on-demand finding-scoped correction agent; model roles are configured independently. |
 
 ### Review workflow
 
@@ -102,6 +124,30 @@ flowchart LR
 9. **Correct on request.** Only after the user clicks **Generate corrected file**, the backend builds a YAML correction plan from the retained proposals and their validated findings, then passes it with those targets to the correction agent. The agent must follow each proposed solution when it is safe and evidence-supported; it can inspect a target, search approved RAG sources using a query scoped to that finding, stage a patch, change a flagged PDF text style, replace an inspected PDF logo with an approved session asset, and verify changes. It can make at most two RAG searches per finding and 12 total, within a limit of 12 model turns and 60 tool calls. Text patches and text-style changes for tone or claims findings must cite an exact source attached to the finding or returned by that finding's search. Visual style changes and logo replacements are limited to the page and target identified by a visual summary finding. With no direct evidence for a text correction, the agent leaves the issue unresolved. It cannot introduce new correction targets. Verified changes are applied to the original DOCX, PDF, TXT, or Markdown file; unsafe or ambiguous corrections remain unresolved.
 
 Rule extraction runs once when each approved reference version is ingested. Tone, claims, and visual review run for each submitted draft; visual review includes comparisons with approved logo assets. The summary model can order findings and suggest correction plans but cannot change the validated finding buffer. Correction runs only on user request and can use RAG only to support a change to a listed finding. Model calls are independently configured per role even when roles use the same Gemini model.
+
+### Backend-generated correction plan
+
+The correction plan is created by the backend only after the reviewer discards any unwanted proposals. The correction agent receives this YAML alongside the matching validated findings; it does not create or revise the plan.
+
+```yaml
+version: 1
+items:
+  - finding_id: "claims:0"
+    original_finding_id: "claims:0"
+    category: "Claims"
+    classification: "UNSUPPORTED"
+    severity: "high"
+    mistake: "The draft makes an unsupported performance claim"
+    explanation: "No approved source substantiates the stated result."
+    proposed_solution: "Remove the quantified performance statement."
+    target:
+      document_quote: "Improves results by 80%."
+      page: null
+      approved_logo_id: null
+    evidence: []
+```
+
+The example is illustrative. Actual plan entries are generated from the review findings and retained proposal text, and visual entries include their page and approved-logo reference when relevant.
 
 ## Requirements
 
@@ -118,19 +164,19 @@ The local database uses PostgreSQL 16 with the pgvector extension via the `pgvec
 
 Run each service in a separate terminal from the repository root unless a step says otherwise.
 
-### Run the full stack with Docker Compose
+### Quick start with Docker Compose
 
-Docker Compose starts PostgreSQL with pgvector, the Express API and its Python worker (including Tesseract OCR), and the Vite frontend:
+Docker Compose starts PostgreSQL with pgvector, the Express API and its Python worker (including Tesseract OCR), and the Vite frontend. For model-backed reviews, first copy `backend/.env.example` to `backend/.env` and add the keys for the agent roles you will use. The app starts without keys, but model-backed calls will fail until a valid key is configured. Compose reads this optional file automatically.
 
 ```bash
 docker compose up --build
 ```
 
-Open `http://localhost:5173`; the API health endpoint is `http://localhost:3001/api/health`. The first build installs the application dependencies, and the first backend startup downloads the BGE-M3 model (about 2.27 GB). The model cache and database are kept in named Docker volumes between runs. Press Ctrl+C to stop the services, then use `docker compose down` to remove the containers and network.
+Open `http://localhost:5173`; the API health endpoint is `http://localhost:3001/api/health`. The first build installs the application dependencies, and the first backend startup downloads the BGE-M3 model (about 2.27 GB). The model cache, database, and extracted reference assets are kept in named Docker volumes between runs. Press Ctrl+C to stop the services, then use `docker compose down` to remove the containers and network while preserving named volumes.
 
-To enable model-backed reviews, copy `backend/.env.example` to `backend/.env` and add the Gemini API keys for the agents you use before starting Compose. The app can start without keys, but model calls will fail until the relevant keys are configured. Docker Compose reads this optional file automatically.
+### Run services separately
 
-### 1. Configure environment
+#### 1. Configure environment
 
 Create the backend environment file and fill in the API keys for the agents you enable:
 
@@ -159,7 +205,7 @@ cp frontend/.env.example frontend/.env
 
 Other backend settings in `backend/.env.example` include `PORT` (API port), `FRONTEND_ORIGIN` (CORS origin), `DATABASE_URL`, `TRUELINE_BRAND_ID` (the configured organization's internal scope), `TRUELINE_ORGANIZATION_NAME` (display/health metadata), and `PYTHON_BIN` (optional Python executable override). The default database URL and local Compose credentials are for development only.
 
-### 2. Install Python dependencies
+#### 2. Install Python dependencies
 
 From the repository root:
 
@@ -176,7 +222,7 @@ For a non-Docker local run, install Tesseract separately: on macOS use `brew ins
 
 The PDF parser OCRs a page only when native text is sparse and embedded images occupy at least 25% of the page. Tune `TRUELINE_OCR_MIN_CHARS` (default `40`), `TRUELINE_OCR_IMAGE_COVERAGE` (default `0.25`), and `TRUELINE_OCR_DPI` (default `200`, bounded to 120–300) in `backend/.env` if documents need different thresholds. OCR warnings are returned with parsed review documents and reference ingestion results. Reference PDF images are saved under `data_ingestion/extracted_assets/` (or `TRUELINE_ASSET_DIR`) with generated names and page/hash metadata stored on the source version; session reset/end removes these local artifacts. They are private local files with no public serving endpoint. A deployment with ephemeral disk will lose them on restart, so durable object storage is a future deployment requirement. Review-document images are not saved as approved reference assets. Vector-only page graphics are not currently rendered as fallback images.
 
-### 3. Start the database
+#### 3. Start the database
 
 In a separate terminal, from the repository root:
 
@@ -187,7 +233,7 @@ docker compose up -d db
 
 The default database is `trueline`, user/password `trueline`/`trueline`, at `localhost:5433`. `backend/.env` has the matching `DATABASE_URL`. The Python worker applies pending migrations when it starts.
 
-### 4. Start the API and Python worker
+#### 4. Start the API and Python worker
 
 In a separate terminal, from the repository root:
 
@@ -199,7 +245,7 @@ npm run dev
 
 Wait for the `Python RAG worker ready (bge-m3)` message. The first startup initializes the model and downloads its dense checkpoint if it is not already cached. The API is available at `http://localhost:3001`; `http://localhost:3001/api/health` reports worker, embedding, and non-secret agent configuration status.
 
-### 5. Start the frontend
+#### 5. Start the frontend
 
 In another terminal, from the repository root:
 
@@ -211,15 +257,18 @@ npm run dev
 
 Open the Vite URL shown in the terminal (normally `http://localhost:5173`). The frontend communicates with the backend URL in `VITE_API_BASE_URL`.
 
-### 6. Try a review
+#### 6. Try a review
 
 1. Start a session in the UI.
 2. Upload reference files in the knowledge library. Choose a type per file: `brand_guidelines`, `tone_of_voice`, `approved_claims`, `product_facts`, `glossary`, `asset_rules`, `legal_compliance`, or `other_reference`. Add approved logo references when logo comparison or replacement is needed.
 3. Wait for ingestion and embedding to finish before navigating to review.
-4. Upload a `.txt`, `.md`, `.pdf`, or `.docx` verification document and choose a channel if relevant.
-5. Inspect the Markdown summary, deterministic findings, evidence, and citations. End the session to clear its data.
+4. Upload a PDF, DOCX, TXT, Markdown, PNG, JPEG, or WebP review file and choose a channel if relevant.
+5. Review the channel-applicable extracted rules and discard any that should not guide this run.
+6. Run the agents. The results open on a separate page with the summary, findings, evidence, citations, and any incomplete checks.
+7. Review the proposed corrections. They are included by default; discard any that should not be sent to the correction agent.
+8. For supported file types, request a corrected draft. The backend creates a YAML plan from the remaining proposals and the correction agent returns verified edits for download. End the session when finished to clear its data.
 
-The API accepts one file per request. Reference uploads are limited to 25 MiB; review uploads are limited to 50 MiB, and extracted review text is limited to 300,000 characters. Reviews accept PDF, DOCX, TXT, Markdown, PNG, JPEG, and WebP. Image uploads are OCRed locally for tone and claims review. Each PDF page is rendered for the Visual Layout agent alongside a bounded number of embedded image assets and approved logo references; the visual agent does not receive extracted copy. DOCX page rendering is not supported, so DOCX reviews do not include page-layout analysis. Non-logo visual violations require an explicit cited visual rule; a logo mismatch can be supported by direct comparison with an approved logo reference. Other visual observations may remain unverified. Approved logo references can be PNG, JPEG, or WebP (5 MiB each, up to 12 per session). The correction workflow supports DOCX, PDF, TXT, and Markdown documents up to 100,000 extracted characters; PDF layout and logo corrections are available only for PDF files. Reference assets and review images are stored locally in the active session. Set `TRUELINE_VISUAL_*` variables in `backend/.env` to override the Claims model configuration for visual review. The worker applies `data_ingestion/migrations/004_logos.sql` at startup.
+The API accepts one file per request. Reference uploads are limited to 25 MiB; review uploads are limited to 50 MiB, and extracted review text is limited to 300,000 characters. Reviews accept PDF, DOCX, TXT, Markdown, PNG, JPEG, and WebP. Image uploads are OCRed locally for tone and claims review. Each PDF page is rendered for visual review alongside a bounded number of embedded image assets and approved logo references; the visual agent does not receive extracted copy. DOCX reviews do not include page-layout analysis. A non-logo layout violation needs an explicit cited visual rule; a logo mismatch can be supported by direct comparison with an approved reference. Approved logo references can be PNG, JPEG, or WebP (5 MiB each, up to 12 per session). Correction supports DOCX, PDF, TXT, and Markdown documents up to 100,000 extracted characters; PDF layout and logo corrections are available only for PDF files. Reference assets are stored locally in the active session. Set `TRUELINE_VISUAL_*` in `backend/.env` to override the Claims model configuration for visual review.
 
 ## Embedding and search configuration
 
@@ -251,8 +300,8 @@ Each model role has an environment namespace. Visual review reuses the Claims mo
 | Tone | `TRUELINE_TONE_API_KEY` | Tone of voice, brand guidelines, glossary |
 | Claims | `TRUELINE_CLAIMS_API_KEY` | Approved claims, product facts (including exact price comparisons), brand guidelines, legal/compliance |
 | Visual | `TRUELINE_VISUAL_API_KEY` | PDF page layout, embedded-image, and approved-logo review against visual guidance; falls back to Claims settings |
-| Summary | `TRUELINE_SUMMARY_API_KEY` | Receives validated, deduplicated findings and returns an ordering hint |
-| Correction | `TRUELINE_CORRECTION_API_KEY` | On-demand, summary-finding-scoped corrections; can retrieve approved evidence for a specific finding |
+| Summary | `TRUELINE_SUMMARY_API_KEY` | Orders validated findings and proposes safe, finding-specific corrections for human review |
+| Correction | `TRUELINE_CORRECTION_API_KEY` | Applies the retained YAML correction plan to its associated findings; can retrieve approved evidence for a specific finding |
 
 Each role also has its own `*_PROVIDER`, `*_BASE_URL`, `*_MODEL`, and `*_TIMEOUT_SECONDS` variables. All currently use Gemini through `https://generativelanguage.googleapis.com/v1beta/openai/` and `gemini-3.1-flash-lite`; each role can later be changed independently. Local Ollama is also supported per role by setting its provider to `ollama`, its OpenAI-compatible endpoint (normally `http://localhost:11434/v1`), and a model available in Ollama. The API key value for Ollama is not used as a secret. No Gemini key is sent to the browser.
 
@@ -272,8 +321,9 @@ The Express server listens on `PORT` (default `3001`) and allows the frontend or
 | `GET /api/logos/:logoId/image?sessionId=...` | Read a session-scoped logo image. |
 | `DELETE /api/logos/:logoId?sessionId=...` | Remove a session-scoped logo reference. |
 | `POST /api/knowledge` | Ingest one file. Form fields include `file`, `sessionId`, `documentType`, optional `title`, optional JSON-array `ruleData`, and optional `approved`. |
-| `POST /api/review` | Review one file. Form fields include `file`, `sessionId`, and optional `channel`. |
-| `POST /api/review/correct` | Generate a same-format corrected draft on request (DOCX, PDF, TXT, or Markdown). Form fields include the original `file`, `sessionId`, and `reviewData` JSON with the completed summary and findings. |
+| `GET /api/review/rules?sessionId=...&channel=...` | Load extracted rules before review. `channel` is optional; when supplied, rules are filtered for that channel. |
+| `POST /api/review` | Review one file. Form fields include `file`, `sessionId`, optional `channel`, and optional JSON-array `discardedRuleIds`. |
+| `POST /api/review/correct` | Generate a same-format corrected draft on request (DOCX, PDF, TXT, or Markdown). Form fields include the original `file`, `sessionId`, and `reviewData` JSON containing the completed summary, retained findings, and human-reviewed `correction_plan` proposals. The backend creates the YAML sent to the correction agent. |
 
 The session identifier is a temporary scope token, not authentication. Every session-scoped endpoint verifies that it matches the active session and configured organization.
 
@@ -297,7 +347,7 @@ Ingestion stores optional `ruleData` records alongside a source version. Approve
 ]
 ```
 
-The current UI supports reference-file uploads, but does not expose a dedicated structured-rule editor. Rules can be supplied through the API's `ruleData` field. Uploading prose such as a PDF brand book does not automatically extract executable deterministic rules; prose can still be embedded and retrieved as guidance for the agents.
+The current UI supports reference-file uploads, extracted-rule review, and per-review discard. It does not expose a dedicated structured-rule editor; deterministic rules can be supplied through the API's `ruleData` field. Natural-language rules are extracted as evidence-linked guidance for specialist agents, not converted into executable deterministic rules.
 
 ## Data model and session assumptions
 
@@ -340,12 +390,12 @@ Start the backend and frontend as described above. Optional ingestion tests use 
 
 ## Current limitations
 
-- No authentication, user accounts, authorization, or multi-tenant isolation; the session token is not an access-control mechanism.
-- OCR quality depends on scan quality and the locally installed Tesseract language data. Logo screening compares extracted images with uploaded references and may miss logos that are substantially altered or embedded as page-level vector artwork.
-- Model-extracted rulebooks depend on the extraction model and preserve exact supporting quotations; they do not create executable deterministic rules or a dedicated structured-rule editor in the UI.
-- Agent outputs can be incomplete or wrong; a human must verify the evidence and conclusions.
-- BGE-M3 uses a substantial local model download, and the current exact vector scan should be benchmarked as the source library grows.
-- Model choice and endpoint are configured by a trusted local operator in `.env`; the UI does not accept user-supplied model endpoints or API keys.
+The local product flow is implemented end to end: versioned approved sources, rule review, cited findings, discardable correction proposals, and verified document edits. The following boundaries matter when deploying beyond a trusted local evaluation:
+
+- **Identity and isolation:** one configured organization and one active session are supported. Authentication, user accounts, access control, and concurrent tenant isolation are not implemented; the session ID is not an authorization credential.
+- **Human oversight:** extraction and review depend on model output. Citations are validated and unsupported results retain uncertainty, but reviewers must still check the evidence and proposed corrections.
+- **Document and rule coverage:** OCR depends on scan quality and Tesseract. DOCX reviews do not include page-layout analysis; PDF visual findings require explicit visual guidance or an approved logo comparison. Natural-language extracted rules guide agents but do not become deterministic checks; structured rules are currently supplied through the API.
+- **Operations and scale:** BGE-M3 requires a large first-time model download, and vector search currently scans eligible rows. Extracted reference assets are stored locally, so deployments with ephemeral disks need durable storage for persistence. Model endpoints and secrets are configured by a trusted operator in `.env`, not by browser users.
 
 ## License
 
