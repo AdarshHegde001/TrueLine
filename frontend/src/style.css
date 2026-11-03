@@ -1080,6 +1080,15 @@ h1, h2, h3, p { margin-top: 0; }
 .pipeline-step b     { color: var(--ink-2); font-size: 13px; font-weight: 600; }
 .pipeline-step small { margin-top: 3px; color: var(--muted); font-size: 12px; }
 .review-submit { width: 100%; margin-top: 14px; }
+.rule-review-panel { margin-top: 20px; padding: 22px; }
+.rule-review-list { display: grid; gap: 10px; }
+.rule-review-item { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 15px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--paper); }
+.rule-review-item p { margin: 6px 0; color: var(--ink-2); font-size: 13px; line-height: 1.55; }
+.rule-review-kind { color: var(--teal); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+.rule-review-source { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; }
+.rule-discard-button { flex: 0 0 auto; padding: 7px 12px; border: 1px solid var(--line-2); border-radius: var(--r-sm); color: var(--ink-2); background: var(--paper); font: inherit; font-size: 12px; cursor: pointer; }
+.rule-discard-button:hover { border-color: #c47b70; color: #9e3f33; background: #fff8f6; }
+.rule-discard-status { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
 
 /* Review side cards */
 .review-side { display: flex; flex-direction: column; gap: 12px; }

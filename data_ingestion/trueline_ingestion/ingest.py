@@ -403,7 +403,15 @@ def get_rulebook(conn, brand_id: str, channel: str | None = None) -> dict:
         for rule in row["extracted_rules"] or []:
             channels = rule.get("applies_to_channels") or []
             if not channels or (channel is not None and channel in channels):
-                rules.append(dict(rule))
+                item = dict(rule)
+                citation = next((value for value in item.get("citations", [])
+                                 if value.get("source_id") and value.get("version_id")), {})
+                item["buffer_id"] = ":".join((
+                    str(citation.get("source_id", "")),
+                    str(citation.get("version_id", "")),
+                    str(item.get("rule_id", "")),
+                ))
+                rules.append(item)
     failed = any(status in {"failed", "error"} for status in statuses)
     return {"status": "error" if failed else "complete", "rules": rules,
             "notes": "One or more approved sources could not be rule-extracted." if failed else ""}

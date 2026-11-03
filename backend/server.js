@@ -296,13 +296,31 @@ app.post('/api/knowledge', sourceUpload.single('file'), async (req, res, next) =
 app.post('/api/review', reviewUpload.single('file'), async (req, res, next) => {
   try {
     const file = filePayload(req.file, { allowImages: true });
+    let discardedRuleIds = [];
+    try { discardedRuleIds = JSON.parse(req.body.discardedRuleIds || '[]'); }
+    catch { throw Object.assign(new Error('Discarded extracted rules are invalid.'), { status: 400 }); }
+    if (!Array.isArray(discardedRuleIds) || discardedRuleIds.some((id) => typeof id !== 'string')) {
+      throw Object.assign(new Error('Discarded extracted rules are invalid.'), { status: 400 });
+    }
     const review = await worker.call('review', {
       ...file,
       sessionId: requiredField(req.body.sessionId, 'Session'),
       organizationId: organizationBrandId,
       channel: String(req.body.channel || '').trim(),
+      discardedRuleIds,
     });
     res.json(review);
+  } catch (error) { next(error); }
+});
+
+app.get('/api/review/rules', async (req, res, next) => {
+  try {
+    const rulebook = await worker.call('review_rules', {
+      sessionId: requiredField(req.query.sessionId, 'Session'),
+      organizationId: organizationBrandId,
+      channel: String(req.query.channel || '').trim(),
+    });
+    res.json(rulebook);
   } catch (error) { next(error); }
 });
 

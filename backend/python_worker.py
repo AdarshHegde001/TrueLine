@@ -69,6 +69,10 @@ def main() -> None:
                                      IngestionKnowledgeAdapter, knowledge, db, ingest, settings,
                                      run_agentic_review, sessions, logos,
                                      MAX_REVIEW_TEXT_CHARS, ReviewDocumentTooLargeError)
+                elif operation == "review_rules":
+                    brand_id = _session_brand_id(request, db, settings, sessions)
+                    with db.connect(settings) as conn:
+                        result = ingest.get_rulebook(conn, brand_id, request.get("channel") or None)
                 elif operation == "correct":
                     result = _correct(request, parse_document, generate_corrected_document,
                                       sessions, logos, db, settings,
@@ -216,6 +220,9 @@ def _review(request, parse_document, prepare_review, Adapter, knowledge, db, ing
             logo_records = logos.get_logo_assets(conn, brand_id)
             deterministic_rules = ingest.get_deterministic_rules(conn, brand_id, request.get("channel") or None)
             rulebook = ingest.get_rulebook(conn, brand_id, request.get("channel") or None)
+        discarded = set(request.get("discardedRuleIds") or [])
+        rulebook["rules"] = [rule for rule in rulebook["rules"]
+                              if rule.get("buffer_id") not in discarded]
         approved_logos = []
         for logo in logo_records:
             try:

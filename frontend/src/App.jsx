@@ -134,6 +134,9 @@ function App() {
   const [knowledgeBusy, setKnowledgeBusy] = useState(false);
   const [knowledgeBatchComplete, setKnowledgeBatchComplete] = useState(false);
   const [reviewBusy, setReviewBusy] = useState(false);
+  const [reviewRulesBusy, setReviewRulesBusy] = useState(false);
+  const [reviewRules, setReviewRules] = useState(null);
+  const [discardedRuleIds, setDiscardedRuleIds] = useState([]);
   const [correctionBusy, setCorrectionBusy] = useState(false);
   const [correctedDraft, setCorrectedDraft] = useState(null);
   const [toast, setToast] = useState('');
@@ -251,7 +254,7 @@ function App() {
 
   async function endSession() {
     if (!session) return;
-    if (knowledgeBusy || reviewBusy || correctionBusy || logoBusy) return notify('Wait for the current operation to finish before ending the session.');
+    if (knowledgeBusy || reviewBusy || reviewRulesBusy || correctionBusy || logoBusy) return notify('Wait for the current operation to finish before ending the session.');
     const approved = window.confirm('End this session and permanently delete all knowledge sources and embeddings from the database?');
     if (!approved) return;
     setSessionBusy(true);
@@ -370,6 +373,7 @@ function App() {
     if (!session) return notify('Start a session before reviewing a document.');
     if (!reviewFile) return notify('Choose a document to verify first.');
     if (reviewFile.size > MAX_REVIEW_FILE_BYTES) return notify('Review documents may be up to 50 MB.');
+    if (!reviewRules) return notify('Review the extracted rules before running agents.');
     setReviewBusy(true);
     setReviewResult(null);
     setCorrectedDraft(null);
@@ -379,6 +383,7 @@ function App() {
       body.append('file', reviewFile);
       body.append('sessionId', session.sessionId);
       body.append('channel', channel);
+      body.append('discardedRuleIds', JSON.stringify(discardedRuleIds));
       const response = await fetch(`${API}/api/review`, { method: 'POST', body });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Review preparation failed.');
@@ -388,6 +393,37 @@ function App() {
     } finally {
       setReviewBusy(false);
     }
+  }
+
+  async function loadReviewRules() {
+    if (!session || !reviewFile) return notify('Choose a document and start a session first.');
+    setReviewRulesBusy(true);
+    setReviewRules(null);
+    setDiscardedRuleIds([]);
+    try {
+      const params = new URLSearchParams({ sessionId: session.sessionId, channel });
+      const response = await fetch(`${API}/api/review/rules?${params}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not load extracted rules.');
+      setReviewRules(data.rules || []);
+    } catch (error) {
+      notify(error.message);
+    } finally {
+      setReviewRulesBusy(false);
+    }
+  }
+
+  function chooseReviewFile(file) {
+    setReviewFile(file);
+    setReviewResult(null);
+    setCorrectedDraft(null);
+    setReviewRules(null);
+    setDiscardedRuleIds([]);
+  }
+
+  function discardExtractedRule(bufferId) {
+    setDiscardedRuleIds((current) => current.includes(bufferId) ? current : [...current, bufferId]);
+    setReviewRules((current) => current?.filter((rule) => rule.buffer_id !== bufferId) ?? current);
   }
 
   async function generateCorrection() {
@@ -467,7 +503,7 @@ function App() {
         </nav>
         <div className="session-control">
           {session && <span className="session-state"><i /> Session active</span>}
-          {session ? <button className="session-button stop" disabled={sessionBusy || sessionLoading || knowledgeBusy || reviewBusy || correctionBusy || logoBusy} onClick={endSession}>{sessionBusy ? 'Please wait…' : 'End session'}</button>
+          {session ? <button className="session-button stop" disabled={sessionBusy || sessionLoading || knowledgeBusy || reviewBusy || reviewRulesBusy || correctionBusy || logoBusy} onClick={endSession}>{sessionBusy ? 'Please wait…' : 'End session'}</button>
             : <button className="session-button" disabled={sessionBusy || sessionLoading} onClick={startSession}>{sessionLoading ? 'Restoring…' : sessionBusy ? 'Starting…' : 'Start session'}</button>}
         </div>
       </header>
@@ -760,15 +796,16 @@ function App() {
                   className={`dropzone review-drop${reviewDragOver ? ' dropzone--active' : ''}`}
                   onDragOver={(e) => { e.preventDefault(); setReviewDragOver(true); }}
                   onDragLeave={() => setReviewDragOver(false)}
-                  onDrop={(e) => { e.preventDefault(); setReviewDragOver(false); setReviewFile(e.dataTransfer.files?.[0] || null); setReviewResult(null); setCorrectedDraft(null); }}
+                  onDrop={(e) => { e.preventDefault(); setReviewDragOver(false); chooseReviewFile(e.dataTransfer.files?.[0] || null); }}
                 >
-                  <input type="file" accept=".txt,.md,.pdf,.docx,.png,.jpg,.jpeg,.webp" onChange={(e) => { setReviewFile(e.target.files?.[0] || null); setReviewResult(null); setCorrectedDraft(null); }} />
+                  <input type="file" accept=".txt,.md,.pdf,.docx,.png,.jpg,.jpeg,.webp" onChange={(e) => chooseReviewFile(e.target.files?.[0] || null)} />
                   <span className="drop-icon">↑</span><b>{reviewFile ? reviewFile.name : 'Choose a document or image to verify'}</b><small>PDF, DOCX, TXT, Markdown, PNG, JPEG, or WebP · up to 50 MB</small>
                 </label>
                 <p className="image-privacy-note">Text and tables are extracted locally for tone and claims checks. The visual agent receives every PDF page preview and your approved logo references; it does not receive extracted review text.</p>
-                <div className="form-grid review-fields single-field"><label className="field"><span>Channel <em>Optional</em></span><select value={channel} onChange={(e) => setChannel(e.target.value)}><option value="advertisement">Advertisement</option><option value="social">Social media</option><option value="website">Website</option><option value="email">Email</option><option value="">No channel</option></select></label></div>
+                <div className="form-grid review-fields single-field"><label className="field"><span>Channel <em>Optional</em></span><select value={channel} onChange={(e) => { setChannel(e.target.value); setReviewRules(null); setDiscardedRuleIds([]); setReviewResult(null); }}><option value="advertisement">Advertisement</option><option value="social">Social media</option><option value="website">Website</option><option value="email">Email</option><option value="">No channel</option></select></label></div>
                 <div className="review-pipeline"><div className="pipeline-title">REVIEW WORKFLOW</div><div className="pipeline-step"><span>1</span><div><b>Parse and check</b><small>Extract text and run deterministic rules</small></div></div><div className="pipeline-step"><span>2</span><div><b>Review voice, claims, and layout</b><small>Specialists inspect content and page previews</small></div></div><div className="pipeline-step"><span>3</span><div><b>Summarize with citations</b><small>Final agent receives validated findings</small></div></div></div>
-                <button className="primary-button review-submit" disabled={reviewBusy || !reviewFile || !health || health.status !== 'ready'} type="submit">{reviewBusy ? <><span className="spinner" /> Running agents…</> : <>Run review <b>→</b></>}</button>
+                {!reviewRules && <button className="primary-button review-submit" disabled={reviewRulesBusy || reviewBusy || !reviewFile || !health || health.status !== 'ready'} type="button" onClick={loadReviewRules}>{reviewRulesBusy ? <><span className="spinner" /> Loading extracted rules…</> : <>Review extracted rules <b>→</b></>}</button>}
+                {reviewRules && <button className="primary-button review-submit" disabled={reviewBusy || !health || health.status !== 'ready'} type="submit">{reviewBusy ? <><span className="spinner" /> Running agents…</> : <>Run review <b>→</b></>}</button>}
               </form>
               <aside className="review-side">
                 <div className="review-side-card"><div className="side-card-icon">✧</div><div><b>Evidence-led review</b><p>Retrieved passages are treated as evidence, not instructions, and stay linked to their source version.</p></div></div>
@@ -788,6 +825,17 @@ function App() {
                 </div>
               </aside>
             </div>
+
+            {reviewRules && <section className="panel rule-review-panel" aria-label="Extracted rule review">
+              <div className="panel-heading"><div className="panel-step">2</div><div><h3>Review extracted rules</h3><p>All rules are included by default. Discard any rule that should not guide this review.</p></div></div>
+              {reviewRules.length ? <div className="rule-review-list">
+                {reviewRules.map((rule) => <article className="rule-review-item" key={rule.buffer_id}>
+                  <div><span className="rule-review-kind">{rule.kind?.replaceAll('_', ' ')}</span><p>{rule.statement}</p>{(rule.citations || []).map((citation, index) => <small className="rule-review-source" key={`${rule.buffer_id}-${index}`}>{citation.source_title || citation.source_id}{citation.page ? ` · page ${citation.page}` : ''}</small>)}</div>
+                  <button className="secondary-button rule-discard-button" type="button" onClick={() => discardExtractedRule(rule.buffer_id)}>Discard</button>
+                </article>)}
+                {discardedRuleIds.length > 0 && <p className="rule-discard-status" role="status">{discardedRuleIds.length} rule{discardedRuleIds.length === 1 ? '' : 's'} discarded and removed from this review.</p>}
+              </div> : <div className="agent-empty"><b>{discardedRuleIds.length ? 'All extracted rules discarded' : 'No extracted rules for this channel'}</b><p>{discardedRuleIds.length ? 'No extracted rules will be sent to the agents.' : 'The review will continue with deterministic checks, retrieved evidence, and specialist agents.'}</p></div>}
+            </section>}
 
             {reviewResult && <div className="results-section">
               <div className="results-heading"><div><div className="eyebrow"><span className="eyebrow-line" /> REVIEW OUTPUT</div><h2>Review results</h2></div><StatusPill status={summaryResult?.status || 'complete'} /></div>
