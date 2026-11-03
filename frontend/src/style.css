@@ -1444,7 +1444,7 @@ h1, h2, h3, p { margin-top: 0; }
 .visual-review-notice { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 14px; margin-bottom: 14px; padding: 11px 14px; color: #315947; background: #eff8f2; border: 1px solid #d3e8da; border-radius: var(--r-sm); font-size: 12px; }
 .visual-review-notice span { color: var(--muted); }
 .image-privacy-note { margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
-.logo-review-panel { grid-column: 1 / -1; }
+.visual-review-panel { grid-column: 1 / -1; }
 .logo-review-references { display: grid; gap: 5px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
 .logo-review-references b { font-size: 11px; }
 .logo-review-references small { color: var(--muted); font-size: 11px; }

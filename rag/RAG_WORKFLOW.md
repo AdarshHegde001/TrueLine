@@ -15,8 +15,10 @@ Review request
   → validate request and brand context
   → parse submitted content and preserve locations
   → run deterministic checks ─────────────────────────┐
-  → retrieve focused evidence for tone and claims
-  → tone agent → claims agent → final summarizer
+  → retrieve focused evidence for tone, claims, and visual review
+  → tone agent ─┐
+  → claims agent ├→ final summarizer
+  → visual agent┘ (page previews + embedded assets + approved logos; no extracted copy)
   → validate returned citations and preserve uncertainty
   → return review result to backend/frontend
   → creator/reviewer makes the decision

@@ -434,7 +434,6 @@ function App() {
   const agentResults = reviewResult?.agentResults || {};
   const summaryResult = agentResults.summary;
   const extractionResult = agentResults.extraction;
-  const logoAgentResult = agentResults.logo;
   const visualAgentResult = agentResults.visual;
   const specialistEvidence = reviewResult?.agentEvidence || {};
 
@@ -538,7 +537,7 @@ function App() {
                   <article><span className="workflow-index">01</span><span className="workflow-icon">↥</span><h3>Add knowledge</h3><p>Upload guidelines, tone rules, claims, facts, glossaries, and asset rules with a document type.</p><span className="stage-tag available">Available now</span></article>
                   <article><span className="workflow-index">02</span><span className="workflow-icon">▤</span><h3>Prepare the index</h3><p>Text is parsed, chunked, tagged, and embedded for hybrid search with PostgreSQL and pgvector.</p><span className="stage-tag available">Available now</span></article>
                   <article><span className="workflow-index">03</span><span className="workflow-icon">⌕</span><h3>Check a draft</h3><p>Deterministic rules run and relevant approved evidence is retrieved for the submitted document.</p><span className="stage-tag available">Available now</span></article>
-                  <article><span className="workflow-index">04</span><span className="workflow-icon">✧</span><h3>Extract, review, summarize</h3><p>An extraction agent validates explicit rules and citations first; focused tone and claims agents review against them, while the final agent summarizes from the rules and draft.</p><span className="stage-tag available">Available now</span></article>
+                  <article><span className="workflow-index">04</span><span className="workflow-icon">✧</span><h3>Extract, review, summarize</h3><p>Focused tone and claims agents review the copy, the visual agent checks page layouts and approved logo use, and the final agent summarizes validated findings.</p><span className="stage-tag available">Available now</span></article>
                 </div>
               </div>
             </section>
@@ -587,19 +586,19 @@ function App() {
                 <div className="check-card check-card--d">
                   <div className="check-card-badge">D</div>
                   <div className="check-card-icon">◉</div>
-                  <h3>Logo review</h3>
-                  <p>Compares logo candidates extracted from uploaded images against your approved logo references using visual similarity analysis.</p>
+                  <h3>Visual layout review</h3>
+                  <p>Reviews page composition and embedded image assets, including logo use against your approved logo references.</p>
                   <ul className="check-list">
-                    <li>Logo candidate extraction</li>
-                    <li>Visual similarity comparison</li>
-                    <li>Per-page observations</li>
+                    <li>Layout, spacing, and contrast</li>
+                    <li>Embedded asset inspection</li>
+                    <li>Approved logo comparison</li>
                   </ul>
                 </div>
               </div>
             </section>
 
             <section className="prototype-section page-content">
-              <div className="prototype-card"><div className="prototype-copy"><div className="eyebrow"><span className="eyebrow-line" /> CURRENT WORKFLOW</div><h2>Every review traces back to its sources.</h2><p>Each review combines deterministic checks with focused tone and claims agents. A final LangGraph step summarizes the findings, and the interface displays the supporting retrieved citations.</p><button className="text-button" onClick={goToReview}><span>Review a document</span><b>→</b></button></div><div className="prototype-checklist"><div><span className="check-state done">✓</span><span><b>Source library</b><small>Typed · embedded · searchable</small></span></div><div><span className="check-state demo">✦</span><span><b>Specialist agents</b><small>Tone · claims · summary</small></span></div><div><span className="check-state next">→</span><span><b>Source citations</b><small>Evidence stays visible for review</small></span></div></div></div>
+              <div className="prototype-card"><div className="prototype-copy"><div className="eyebrow"><span className="eyebrow-line" /> CURRENT WORKFLOW</div><h2>Every review traces back to its sources.</h2><p>Each review combines deterministic checks with tone, claims, and visual agents. A final LangGraph step summarizes validated findings, and the interface displays supporting citations.</p><button className="text-button" onClick={goToReview}><span>Review a document</span><b>→</b></button></div><div className="prototype-checklist"><div><span className="check-state done">✓</span><span><b>Source library</b><small>Typed · embedded · searchable</small></span></div><div><span className="check-state demo">✦</span><span><b>Specialist agents</b><small>Tone · claims · visual</small></span></div><div><span className="check-state next">→</span><span><b>Source citations</b><small>Evidence stays visible for review</small></span></div></div></div>
             </section>
 
             <section className="closing-cta page-content"><div><div className="eyebrow"><span className="eyebrow-line" /> START WITH YOUR SOURCES</div><h2>Give every review a trusted reference.</h2></div><button className="primary-button" onClick={goToKnowledge}>Open knowledge base <b>→</b></button></section>
@@ -715,7 +714,7 @@ function App() {
         ) : activeTab === 'review' ? (
           <section className="page-content review-page animate-fadein">
             <div className="eyebrow"><span className="eyebrow-line" /> DOCUMENT REVIEW</div>
-            <div className="page-heading-row"><div><h1>Check a draft before it goes out.</h1><p className="subtitle">Run deterministic checks and evidence-led tone and claims reviews against your indexed sources.</p></div><span className="step-label"><b>01</b> AGENTIC REVIEW</span></div>
+            <div className="page-heading-row"><div><h1>Check a draft before it goes out.</h1><p className="subtitle">Run deterministic checks and evidence-led tone, claims, and visual reviews against your indexed sources.</p></div><span className="step-label"><b>01</b> AGENTIC REVIEW</span></div>
 
             {/* ── Review guide banner ── */}
             <div className="review-guide-banner">
@@ -776,7 +775,7 @@ function App() {
             {reviewResult && <div className="results-section">
               <div className="results-heading"><div><div className="eyebrow"><span className="eyebrow-line" /> REVIEW OUTPUT</div><h2>Review results</h2></div><StatusPill status={summaryResult?.classification || summaryResult?.status || 'complete'} /></div>
               {reviewResult.preparedReview?.document?.warnings?.length > 0 && <div className="parse-warning review-warning">{reviewResult.preparedReview.document.warnings.map((warning, index) => <p key={`review-warning-${index}`}>{warning}</p>)}</div>}
-              {reviewResult.visualAssets?.length > 0 && <div className="visual-review-notice"><b>{reviewResult.visualAssets.length} image{reviewResult.visualAssets.length === 1 ? '' : 's'} extracted</b><span>{[...new Set(reviewResult.visualAssets.map((item) => item.page))].map((page) => `page ${page}`).join(' · ')} · {reviewResult.logoReview?.notes || 'Visual review pending'}</span></div>}
+              {reviewResult.visualAssets?.length > 0 && <div className="visual-review-notice"><b>{reviewResult.visualAssets.length} image{reviewResult.visualAssets.length === 1 ? '' : 's'} extracted</b><span>{[...new Set(reviewResult.visualAssets.map((item) => item.page))].map((page) => `page ${page}`).join(' · ')} · {visualAgentResult?.coverage?.embedded_assets_provided ?? 0} embedded asset{visualAgentResult?.coverage?.embedded_assets_provided === 1 ? '' : 's'} and {visualAgentResult?.coverage?.logo_references_provided ?? 0} approved logo reference{visualAgentResult?.coverage?.logo_references_provided === 1 ? '' : 's'} sent to visual review</span></div>}
               <div className="panel result-panel ai-panel summary-panel"><div className="result-panel-heading"><div><span className="result-index ai-index">✦</span><h3>Final review summary</h3></div><span className="result-count">{summaryResult?.status === 'error' ? 'CHECK FAILED' : 'COMPLETED'}</span></div>
                 {summaryResult?.summary ? <MarkdownText className="markdown-summary">{summaryResult.summary}</MarkdownText> : <div className="ai-empty"><div className="ai-empty-icon">✦</div><b>{summaryResult?.status === 'error' ? 'Summary unavailable' : 'No summary returned'}</b><p>The deterministic results and specialist agent outputs are shown below.</p></div>}
                 {summaryResult?.notes && <p className="citation-validation-note">{summaryResult.error_type ? `Summary agent error: ${summaryResult.error_type}. ` : ''}{summaryResult.notes}</p>}
@@ -830,24 +829,14 @@ function App() {
                     })}</div> : <div className="agent-empty"><b>{agent?.classification === 'CHECK_FAILED' || agent?.status === 'error' ? 'Agent could not complete' : 'No specialist findings'}</b><p>{agent?.notes || (agent?.status === 'insufficient_evidence' ? 'The index did not return enough relevant approved evidence.' : 'This agent did not flag a finding.')}</p></div>}
                   </details>;
                 })}
-                <div className="panel result-panel specialist-panel logo-review-panel">
+                <div className="panel result-panel specialist-panel visual-review-panel">
                   <div className="result-panel-heading"><div><span className="result-index">4</span><h3>Visual layout review</h3></div><span className="result-count">{visualAgentResult?.findings?.length || 0} FINDING{visualAgentResult?.findings?.length === 1 ? '' : 'S'}</span></div>
                   {visualAgentResult?.findings?.length ? <div className="agent-finding-list">{visualAgentResult.findings.map((finding, index) => <article className="agent-finding" key={`${finding.image_id}-${index}`}>
-                    <b>Page {finding.page} · {finding.assessment}</b><p>{finding.observation}</p><small>Severity: {finding.severity} · {finding.classification?.replaceAll('_', ' ')}</small>
+                    <b>{finding.image_type === 'embedded_asset' ? `Embedded image · page ${finding.page}` : `Page ${finding.page}`} · {finding.assessment}</b><p>{finding.observation}</p><small>Severity: {finding.severity} · {finding.classification?.replaceAll('_', ' ')}</small>
                     {finding.logo_comparison && <small>Approved logo comparison: {finding.logo_comparison.replaceAll('_', ' ')}{finding.reference_logo_title ? ` · ${finding.reference_logo_title}` : ''}</small>}
                     {(finding.citations || []).length > 0 && <div className="citation-list"><b>Visual guidance</b>{finding.citations.map((citation, citationIndex) => <article className="citation-card" key={`${citation.source_id}-${citation.chunk_id}-${citationIndex}`}><div className="citation-heading"><b>{citation.source_title || citation.source_id}</b><span>v{citation.version_number ?? citation.version_id}</span></div><small>{citation.pages?.length ? `page${citation.pages.length > 1 ? 's' : ''} ${citation.pages.join(', ')}` : citation.page ? `page ${citation.page}` : 'approved source'}</small><blockquote>“{citation.quote}”</blockquote></article>)}</div>}
-                  </article>)}</div> : <div className="agent-empty"><b>{visualAgentResult?.status === 'error' ? 'Visual review could not complete' : visualAgentResult?.status === 'insufficient_evidence' ? 'Page preview unavailable' : 'No layout findings'}</b><p>{visualAgentResult?.notes || (visualAgentResult?.status === 'complete' ? `Reviewed ${visualAgentResult.coverage?.pages_reviewed ?? 'all available'} page${visualAgentResult.coverage?.pages_reviewed === 1 ? '' : 's'} and provided ${visualAgentResult.coverage?.logo_references_provided ?? 0} approved logo reference${visualAgentResult.coverage?.logo_references_provided === 1 ? '' : 's'}. No supported visual issues were reported.` : 'The visual agent found no supported layout issues in the available page previews.')}</p></div>}
-                </div>
-                <div className="panel result-panel specialist-panel logo-review-panel">
-                  <div className="result-panel-heading"><div><span className="result-index">5</span><h3>Logo review</h3></div><span className="result-count">{logoAgentResult?.findings?.length || 0} OBSERVATION{logoAgentResult?.findings?.length === 1 ? '' : 'S'}</span></div>
-                  {logoAgentResult?.findings?.length ? <div className="agent-finding-list">{logoAgentResult.findings.map((finding, index) => {
-                    const reference = reviewResult.logoReferences?.find((item) => item.logo_id === finding.reference_logo_id);
-                    return <article className="agent-finding" key={`${finding.review_image_id}-${index}`}>
-                      <b>Logo candidate on page {finding.page}</b><p>{finding.observation}</p><small>Severity: not assessed for visual comparison</small><small>Visual comparison: {finding.comparison?.replaceAll('_', ' ')}</small>
-                      {reference ? <div className="citation-list"><b>Approved logo reference</b><article className="citation-card"><div className="citation-heading"><b>{reference.title}</b><span>Reference</span></div><small>{reference.original_name} · reference {reference.logo_id}</small></article></div> : <p className="citation-missing">No approved logo reference was available for this comparison.</p>}
-                    </article>;
-                  })}</div> : <div className="agent-empty"><b>{logoAgentResult?.status === 'error' ? 'Logo agent could not complete' : logoAgentResult?.status === 'insufficient_evidence' ? 'Approved logo needed' : 'No standalone logo candidates found'}</b><p>{logoAgentResult?.notes || reviewResult.logoReview?.notes || 'This scan looks for embedded images resembling approved logos. Page-level logo use is assessed in Visual layout review.'}</p></div>}
-                  {reviewResult.logoReferences?.length > 0 && <div className="logo-review-references"><b>Approved references in this session</b>{reviewResult.logoReferences.map((logo) => <small key={logo.logo_id}>{logo.title} · {logo.original_name}</small>)}</div>}
+                  </article>)}</div> : <div className="agent-empty"><b>{visualAgentResult?.status === 'error' ? 'Visual review could not complete' : visualAgentResult?.status === 'insufficient_evidence' ? 'Page preview unavailable' : 'No visual findings'}</b><p>{visualAgentResult?.notes || (visualAgentResult?.status === 'complete' ? `Reviewed ${visualAgentResult.coverage?.pages_reviewed ?? 'all available'} page${visualAgentResult.coverage?.pages_reviewed === 1 ? '' : 's'}, ${visualAgentResult.coverage?.embedded_assets_provided ?? 0} embedded image asset${visualAgentResult.coverage?.embedded_assets_provided === 1 ? '' : 's'}, and ${visualAgentResult.coverage?.logo_references_provided ?? 0} approved logo reference${visualAgentResult.coverage?.logo_references_provided === 1 ? '' : 's'}. No supported visual issues were reported.` : 'The visual agent found no supported layout issues in the available page previews.')}</p></div>}
+                  {reviewResult.logoReferences?.length > 0 && <div className="logo-review-references"><b>Approved logo references available for visual review</b>{reviewResult.logoReferences.map((logo) => <small key={logo.logo_id}>{logo.title} · {logo.original_name}</small>)}</div>}
                 </div>
               </div>
               <details className="context-details"><summary>Inspect the context sent for AI review</summary><pre>{JSON.stringify(reviewResult.preparedReview.ai_context, null, 2)}</pre></details>

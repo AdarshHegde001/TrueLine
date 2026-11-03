@@ -224,7 +224,7 @@ def _review(request, parse_document, prepare_review, Adapter, knowledge, db, ing
                 })
             except Exception:
                 continue
-        logo_candidates = _select_logo_candidates(document.images, image_root, approved_logos)
+        visual_assets = _select_visual_assets(document.images, image_root)
         visual_images = _select_visual_images(document.images, image_root)
         # Temporary paths are internal only; return source/page/hash metadata, not paths.
         safe_images = tuple(image.model_copy(update={"storage_ref": None}) for image in document.images)
@@ -242,7 +242,7 @@ def _review(request, parse_document, prepare_review, Adapter, knowledge, db, ing
         )
         result = run_agentic_review(
             prepared, adapter, rulebook=rulebook,
-            logo_candidates=logo_candidates, approved_logos=approved_logos,
+            approved_logos=approved_logos, visual_assets=visual_assets,
             visual_images=visual_images,
         )
         result["visualAssets"] = [image.model_dump(mode="json") for image in safe_images]
@@ -251,7 +251,6 @@ def _review(request, parse_document, prepare_review, Adapter, knowledge, db, ing
              if key not in {"storage_ref", "sha256", "visual_hash", "ocr_text", "data"}}
             for logo in logo_records
         ]
-        result["logoReview"] = result["agentResults"].get("logo", {})
         return result
 
 
@@ -265,38 +264,28 @@ def _correct(request, parse_document, generate_corrected_docx, sessions, db, set
     return generate_corrected_docx(document, request.get("reviewData"))
 
 
-def _select_logo_candidates(images, image_root, approved_logos):
-    """OCR/hash-filter locally; only likely matches reach the external logo agent."""
-    if not approved_logos:
-        return []
-    from rag.parsing.image import ImageParser
-    from rag.parsing.vision import hash_similarity, image_dhash, normalized_image_text
-
-    reference_tokens = {
-        logo["logo_id"]: normalized_image_text(logo.get("ocr_text", ""))
-        for logo in approved_logos
-    }
-    references_by_hash = []
-    for logo in approved_logos:
-        try:
-            visual_hash = logo.get("visual_hash") or image_dhash(logo["data"])
-        except Exception:
-            visual_hash = ""
-        references_by_hash.append((logo, visual_hash))
-
-    candidates = []
+def _select_visual_assets(images, image_root, *, max_assets=8, max_item_bytes=4 * 1024 * 1024,
+                          max_total_bytes=8 * 1024 * 1024):
+    """Load bounded embedded images so the visual model can identify logo candidates itself."""
+    selected = []
+    seen = set()
+    used = 0
+    root = Path(image_root).resolve()
     for image in images:
-        # A rendered PDF page contains charts and text around vector graphics, so it
-        # is never sent as a logo candidate. Only standalone image assets are screened.
-        if image.extraction_method == "page_render" or not image.storage_ref:
+        if image.extraction_method != "embedded" or not image.storage_ref or image.image_id in seen:
             continue
-        image_path = (Path(image_root) / image.storage_ref).resolve()
-        if Path(image_root).resolve() not in image_path.parents:
+        if len(selected) >= max_assets:
+            break
+        image_path = (root / image.storage_ref).resolve()
+        if root not in image_path.parents:
             continue
         try:
+            if image_path.stat().st_size > max_item_bytes:
+                continue
             image_data = image_path.read_bytes()
-            candidate_hash = image_dhash(image_data)
-        except Exception:
+        except OSError:
+            continue
+        if used + len(image_data) > max_total_bytes:
             continue
         extension = str(image.format or "").lower()
         content_type = {
@@ -304,42 +293,14 @@ def _select_logo_candidates(images, image_root, approved_logos):
         }.get(extension)
         if not content_type:
             continue
-        similarities = [
-            (hash_similarity(candidate_hash, reference_hash), logo)
-            for logo, reference_hash in references_by_hash
-        ]
-        # Skip OCR for images that are visually far from every approved logo.
-        # Text such as a chart title or brand name alone must never make an image
-        # eligible for upload to Gemini.
-        if not similarities or max(score for score, _logo in similarities) < 0.70:
-            continue
-        try:
-            candidate_ocr = ImageParser().parse(
-                image_data, document_name=f"candidate.{extension}", store_images=False,
-            ).text
-        except Exception:
-            candidate_ocr = ""
-        candidate_tokens = normalized_image_text(candidate_ocr)
-        best = (0.0, None)
-        for similarity, logo in similarities:
-            shared_tokens = candidate_tokens & reference_tokens[logo["logo_id"]]
-            text_match = bool(shared_tokens)
-            # Exact/near visual matches pass directly. Lower similarity needs
-            # matching logo text as a second signal, reducing chart false positives.
-            score = similarity if similarity >= 0.82 or (similarity >= 0.70 and text_match) else 0.0
-            if score > best[0]:
-                best = (score, logo)
-        if best[1] is None:
-            continue
-        candidates.append({
-            "image_id": image.image_id,
-            "page": image.page or 1,
-            "content_type": content_type,
-            "data": image_data,
-            "matched_reference_id": best[1]["logo_id"],
-            "local_match_score": round(best[0], 3),
+        selected.append({
+            "image_id": image.image_id, "page": image.page or 1,
+            "content_type": content_type, "data": image_data,
+            "extraction_method": "embedded",
         })
-    return candidates
+        seen.add(image.image_id)
+        used += len(image_data)
+    return selected
 
 
 def _select_visual_images(images, image_root, *, max_item_bytes=4 * 1024 * 1024):
