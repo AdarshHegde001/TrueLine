@@ -27,8 +27,8 @@ The current baseline is a single-organization, one-active-session prototype. It 
 1. Start a session. The API clears the previous session's indexed knowledge and creates a new isolated knowledge scope.
 2. Upload reference files and assign document types. Approved files are parsed, rule-extracted once, and indexed; extracted rules and original passages are stored against the approved source version.
 3. Upload a draft to review and optionally select its channel. The backend parses it, runs deterministic checks, and retrieves relevant passages.
-4. Tone and Claims agents review the full draft with applicable session rules and deterministic results. Each may run at most three targeted RAG searches, then reassess once with the returned evidence. The logo reviewer remains a separate visual branch.
-5. The backend validates and deduplicates deterministic and agent findings in a per-review buffer. The Summary agent can prioritize only those findings; the application renders the report from the validated buffer.
+4. Tone and Claims agents review every draft-text chunk with applicable session rules and deterministic results. An independent Visual Layout agent reviews every PDF page preview or submitted image against extracted visual rules and approved logo references. It ignores extracted copy. These specialists can run bounded targeted RAG searches and reassess with returned evidence. The logo reviewer remains a separate visual branch.
+5. The backend validates and deduplicates deterministic, tone, claims, visual-layout, and logo findings in a per-review buffer. The Summary agent can prioritize only those findings; the application renders the report from the validated buffer.
 6. If the user requests a corrected version, the correction agent receives the original parsed document, active extracted rules, and final findings. The backend applies only exact-span edits and generates a DOCX draft for inspection.
 7. End the session when finished. The prototype deletes the session's sources, versions, chunks, and embeddings so a later session starts clean.
 
@@ -51,13 +51,17 @@ flowchart LR
   PREP --> GRAPH[LangGraph workflow]
   RULES --> TONE[Tone agent]
   RULES --> CLAIMS[Claims agent]
+  RULES --> VISUAL[Visual layout agent]
   GRAPH --> TONE
   GRAPH --> CLAIMS
+  GRAPH --> VISUAL
   GRAPH --> LOGO[Logo review branch]
   TONE <--> RET
   CLAIMS <--> RET
+  VISUAL <--> RET
   TONE --> BUF[Validate and deduplicate findings]
   CLAIMS --> BUF
+  VISUAL --> BUF
   DET --> BUF
   LOGO --> BUF
   BUF --> SUM[Summary agent: prioritizes validated findings]
@@ -137,6 +141,7 @@ In `backend/.env`, set a valid value for each of:
 TRUELINE_TONE_API_KEY=your_tone_agent_gemini_key
 TRUELINE_EXTRACTION_API_KEY=your_extraction_agent_gemini_key
 TRUELINE_CLAIMS_API_KEY=your_claims_agent_gemini_key
+TRUELINE_VISUAL_API_KEY=your_visual_agent_gemini_key
 TRUELINE_SUMMARY_API_KEY=your_summary_agent_gemini_key
 TRUELINE_LOGO_API_KEY=your_logo_agent_gemini_key
 TRUELINE_CORRECTION_API_KEY=your_correction_agent_gemini_key
@@ -212,7 +217,7 @@ Open the Vite URL shown in the terminal (normally `http://localhost:5173`). The 
 4. Upload a `.txt`, `.md`, `.pdf`, or `.docx` verification document and choose a channel if relevant.
 5. Inspect the Markdown summary, deterministic findings, evidence, and citations. End the session to clear its data.
 
-The API accepts one file per `/api/knowledge` or `/api/review` request (25 MiB maximum). Review uploads also accept PNG, JPEG, and WebP images; their text is OCRed locally. The assembled review context has a 120,000-character preflight limit; this counts serialized review text, segments, deterministic results, and retrieved evidence, and is not a model-token guarantee. The backend errors rather than silently truncating an oversized context. Approved logo references can be uploaded separately as PNG, JPEG, or WebP (5 MiB each, up to 12 per session). References and review visuals are private, session-scoped local assets. The logo agent receives only approved logo references and standalone document images that pass local visual-hash screening against those references; OCR text alone cannot make an image eligible. Full-page renders, charts, and unrelated images are not sent to Gemini. Vector-heavy pages may be rendered for local extraction, but are excluded from logo-agent input. Set `TRUELINE_LOGO_PROVIDER`, `TRUELINE_LOGO_BASE_URL`, `TRUELINE_LOGO_API_KEY`, `TRUELINE_LOGO_MODEL`, and `TRUELINE_LOGO_TIMEOUT_SECONDS` in `backend/.env`. The Python worker applies `data_ingestion/migrations/004_logos.sql` when it starts.
+The API accepts one file per `/api/knowledge` or `/api/review` request (25 MiB maximum). Review uploads also accept PNG, JPEG, and WebP images; their text is OCRed locally for text-focused checks. Every PDF page is rendered and sent to the independent Visual Layout agent with approved logo references; the agent assesses page design and logo usage without using extracted copy. DOCX page rendering is not supported yet, so DOCX reviews receive no page-layout analysis. Layout violations require an explicit cited visual rule; otherwise observations remain unverified. Approved logo references can be uploaded separately as PNG, JPEG, or WebP (5 MiB each, up to 12 per session). References and review visuals are private, session-scoped local assets. The logo agent also receives approved logo references and standalone document images that pass local visual-hash screening against those references. Set `TRUELINE_VISUAL_PROVIDER`, `TRUELINE_VISUAL_BASE_URL`, `TRUELINE_VISUAL_API_KEY`, `TRUELINE_VISUAL_MODEL`, and `TRUELINE_VISUAL_TIMEOUT_SECONDS` in `backend/.env`. The Python worker applies `data_ingestion/migrations/004_logos.sql` when it starts.
 
 ## Embedding and search configuration
 
@@ -236,13 +241,14 @@ For a lightweight plumbing-only local run, `INGESTION_EMBEDDER=fake` selects a d
 
 ## Agent API configuration
 
-Each model role has an independent environment namespace. The checked-in `.env.example` sets provider, endpoint, model, and timeout individually; add a key to each enabled role in your private `backend/.env`:
+Each model role has an environment namespace. Visual review reuses the Claims model settings and API key by default; set `TRUELINE_VISUAL_*` values to override them. Add keys for other enabled roles in your private `backend/.env`:
 
 | Role | API key | Default retrieval focus |
 | --- | --- | --- |
 | Rule extraction | `TRUELINE_EXTRACTION_API_KEY` | Runs when an approved reference version is ingested; extracts cited rules and product facts, including prices |
 | Tone | `TRUELINE_TONE_API_KEY` | Tone of voice, brand guidelines, glossary |
 | Claims | `TRUELINE_CLAIMS_API_KEY` | Approved claims, product facts (including exact price comparisons), brand guidelines, legal/compliance |
+| Visual | `TRUELINE_VISUAL_API_KEY` | PDF page and submitted-image layout review against approved visual guidance |
 | Summary | `TRUELINE_SUMMARY_API_KEY` | Receives validated, deduplicated findings and returns an ordering hint |
 | Logo | `TRUELINE_LOGO_API_KEY` | Visual comparison against uploaded approved logo assets |
 | Correction | `TRUELINE_CORRECTION_API_KEY` | On-demand DOCX drafting from the original document and review findings |

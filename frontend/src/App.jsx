@@ -435,6 +435,7 @@ function App() {
   const summaryResult = agentResults.summary;
   const extractionResult = agentResults.extraction;
   const logoAgentResult = agentResults.logo;
+  const visualAgentResult = agentResults.visual;
   const specialistEvidence = reviewResult?.agentEvidence || {};
 
   return (
@@ -728,7 +729,7 @@ function App() {
               </div>
               <div className="rguide-item">
                 <span className="rguide-icon">✧</span>
-                <div><b>Run the review</b><small>Tone, claims, logo + summary agents</small></div>
+                <div><b>Run the review</b><small>Tone, claims, visual layout, logo + summary agents</small></div>
               </div>
               <div className="rguide-item">
                 <span className="rguide-icon">◈</span>
@@ -748,9 +749,9 @@ function App() {
                   <input type="file" accept=".txt,.md,.pdf,.docx,.png,.jpg,.jpeg,.webp" onChange={(e) => { setReviewFile(e.target.files?.[0] || null); setReviewResult(null); setCorrectedDocx(null); }} />
                   <span className="drop-icon">↑</span><b>{reviewFile ? reviewFile.name : 'Choose a document or image to verify'}</b><small>PDF, DOCX, TXT, Markdown, PNG, JPEG, or WebP · up to 50 MB</small>
                 </label>
-                <p className="image-privacy-note">Text and tables are extracted locally. Only approved logo references and image candidates matched to them are sent to the logo agent; charts and unrelated images stay local.</p>
+                <p className="image-privacy-note">Text and tables are extracted locally for tone and claims checks. The visual agent receives every PDF page preview and your approved logo references; it does not receive extracted review text.</p>
                 <div className="form-grid review-fields single-field"><label className="field"><span>Channel <em>Optional</em></span><select value={channel} onChange={(e) => setChannel(e.target.value)}><option value="advertisement">Advertisement</option><option value="social">Social media</option><option value="website">Website</option><option value="email">Email</option><option value="">No channel</option></select></label></div>
-                <div className="review-pipeline"><div className="pipeline-title">REVIEW WORKFLOW</div><div className="pipeline-step"><span>1</span><div><b>Parse and check</b><small>Extract text and run deterministic rules</small></div></div><div className="pipeline-step"><span>2</span><div><b>Review voice and claims</b><small>Specialists retrieve relevant typed sources</small></div></div><div className="pipeline-step"><span>3</span><div><b>Summarize with citations</b><small>Final agent gets evidence and prior findings</small></div></div></div>
+                <div className="review-pipeline"><div className="pipeline-title">REVIEW WORKFLOW</div><div className="pipeline-step"><span>1</span><div><b>Parse and check</b><small>Extract text and run deterministic rules</small></div></div><div className="pipeline-step"><span>2</span><div><b>Review voice, claims, and layout</b><small>Specialists inspect content and page previews</small></div></div><div className="pipeline-step"><span>3</span><div><b>Summarize with citations</b><small>Final agent receives validated findings</small></div></div></div>
                 <button className="primary-button review-submit" disabled={reviewBusy || !reviewFile || !health || health.status !== 'ready'} type="submit">{reviewBusy ? <><span className="spinner" /> Running agents…</> : <>Run review <b>→</b></>}</button>
               </form>
               <aside className="review-side">
@@ -773,11 +774,12 @@ function App() {
             </div>
 
             {reviewResult && <div className="results-section">
-              <div className="results-heading"><div><div className="eyebrow"><span className="eyebrow-line" /> REVIEW OUTPUT</div><h2>Review results</h2></div><StatusPill status={summaryResult?.status || 'complete'} /></div>
+              <div className="results-heading"><div><div className="eyebrow"><span className="eyebrow-line" /> REVIEW OUTPUT</div><h2>Review results</h2></div><StatusPill status={summaryResult?.classification || summaryResult?.status || 'complete'} /></div>
               {reviewResult.preparedReview?.document?.warnings?.length > 0 && <div className="parse-warning review-warning">{reviewResult.preparedReview.document.warnings.map((warning, index) => <p key={`review-warning-${index}`}>{warning}</p>)}</div>}
               {reviewResult.visualAssets?.length > 0 && <div className="visual-review-notice"><b>{reviewResult.visualAssets.length} image{reviewResult.visualAssets.length === 1 ? '' : 's'} extracted</b><span>{[...new Set(reviewResult.visualAssets.map((item) => item.page))].map((page) => `page ${page}`).join(' · ')} · {reviewResult.logoReview?.notes || 'Visual review pending'}</span></div>}
               <div className="panel result-panel ai-panel summary-panel"><div className="result-panel-heading"><div><span className="result-index ai-index">✦</span><h3>Final review summary</h3></div><span className="result-count">{summaryResult?.status === 'error' ? 'CHECK FAILED' : 'COMPLETED'}</span></div>
                 {summaryResult?.summary ? <MarkdownText className="markdown-summary">{summaryResult.summary}</MarkdownText> : <div className="ai-empty"><div className="ai-empty-icon">✦</div><b>{summaryResult?.status === 'error' ? 'Summary unavailable' : 'No summary returned'}</b><p>The deterministic results and specialist agent outputs are shown below.</p></div>}
+                {summaryResult?.notes && <p className="citation-validation-note">{summaryResult.error_type ? `Summary agent error: ${summaryResult.error_type}. ` : ''}{summaryResult.notes}</p>}
                 {summaryResult?.key_findings?.length > 0 && <div className="summary-key-findings"><b>Key findings</b><ul>{summaryResult.key_findings.map((finding, index) => <li key={`${index}-${finding}`}>{finding}</li>)}</ul></div>}
                 {summaryResult?.summary && summaryResult?.findings?.length > 0 && <div className="correction-action">
                   <div><b>Create a corrected draft?</b><p>{summaryResult?.status === 'error' ? 'Summary prioritization failed; the draft will use the validated findings shown above. Review it before use.' : 'The correction agent will use the original upload and the findings above to prepare a DOCX draft. Review it before use.'}</p></div>
@@ -829,14 +831,22 @@ function App() {
                   </details>;
                 })}
                 <div className="panel result-panel specialist-panel logo-review-panel">
-                  <div className="result-panel-heading"><div><span className="result-index">4</span><h3>Logo review</h3></div><span className="result-count">{logoAgentResult?.findings?.length || 0} OBSERVATION{logoAgentResult?.findings?.length === 1 ? '' : 'S'}</span></div>
+                  <div className="result-panel-heading"><div><span className="result-index">4</span><h3>Visual layout review</h3></div><span className="result-count">{visualAgentResult?.findings?.length || 0} FINDING{visualAgentResult?.findings?.length === 1 ? '' : 'S'}</span></div>
+                  {visualAgentResult?.findings?.length ? <div className="agent-finding-list">{visualAgentResult.findings.map((finding, index) => <article className="agent-finding" key={`${finding.image_id}-${index}`}>
+                    <b>Page {finding.page} · {finding.assessment}</b><p>{finding.observation}</p><small>Severity: {finding.severity} · {finding.classification?.replaceAll('_', ' ')}</small>
+                    {finding.logo_comparison && <small>Approved logo comparison: {finding.logo_comparison.replaceAll('_', ' ')}{finding.reference_logo_title ? ` · ${finding.reference_logo_title}` : ''}</small>}
+                    {(finding.citations || []).length > 0 && <div className="citation-list"><b>Visual guidance</b>{finding.citations.map((citation, citationIndex) => <article className="citation-card" key={`${citation.source_id}-${citation.chunk_id}-${citationIndex}`}><div className="citation-heading"><b>{citation.source_title || citation.source_id}</b><span>v{citation.version_number ?? citation.version_id}</span></div><small>{citation.pages?.length ? `page${citation.pages.length > 1 ? 's' : ''} ${citation.pages.join(', ')}` : citation.page ? `page ${citation.page}` : 'approved source'}</small><blockquote>“{citation.quote}”</blockquote></article>)}</div>}
+                  </article>)}</div> : <div className="agent-empty"><b>{visualAgentResult?.status === 'error' ? 'Visual review could not complete' : visualAgentResult?.status === 'insufficient_evidence' ? 'Page preview unavailable' : 'No layout findings'}</b><p>{visualAgentResult?.notes || (visualAgentResult?.status === 'complete' ? `Reviewed ${visualAgentResult.coverage?.pages_reviewed ?? 'all available'} page${visualAgentResult.coverage?.pages_reviewed === 1 ? '' : 's'} and provided ${visualAgentResult.coverage?.logo_references_provided ?? 0} approved logo reference${visualAgentResult.coverage?.logo_references_provided === 1 ? '' : 's'}. No supported visual issues were reported.` : 'The visual agent found no supported layout issues in the available page previews.')}</p></div>}
+                </div>
+                <div className="panel result-panel specialist-panel logo-review-panel">
+                  <div className="result-panel-heading"><div><span className="result-index">5</span><h3>Logo review</h3></div><span className="result-count">{logoAgentResult?.findings?.length || 0} OBSERVATION{logoAgentResult?.findings?.length === 1 ? '' : 'S'}</span></div>
                   {logoAgentResult?.findings?.length ? <div className="agent-finding-list">{logoAgentResult.findings.map((finding, index) => {
                     const reference = reviewResult.logoReferences?.find((item) => item.logo_id === finding.reference_logo_id);
                     return <article className="agent-finding" key={`${finding.review_image_id}-${index}`}>
                       <b>Logo candidate on page {finding.page}</b><p>{finding.observation}</p><small>Severity: not assessed for visual comparison</small><small>Visual comparison: {finding.comparison?.replaceAll('_', ' ')}</small>
                       {reference ? <div className="citation-list"><b>Approved logo reference</b><article className="citation-card"><div className="citation-heading"><b>{reference.title}</b><span>Reference</span></div><small>{reference.original_name} · reference {reference.logo_id}</small></article></div> : <p className="citation-missing">No approved logo reference was available for this comparison.</p>}
                     </article>;
-                  })}</div> : <div className="agent-empty"><b>{logoAgentResult?.status === 'error' ? 'Logo agent could not complete' : logoAgentResult?.status === 'insufficient_evidence' ? 'Approved logo needed' : 'No likely logo matches found'}</b><p>{logoAgentResult?.notes || reviewResult.logoReview?.notes || 'Upload an approved logo reference to enable logo comparison.'}</p></div>}
+                  })}</div> : <div className="agent-empty"><b>{logoAgentResult?.status === 'error' ? 'Logo agent could not complete' : logoAgentResult?.status === 'insufficient_evidence' ? 'Approved logo needed' : 'No standalone logo candidates found'}</b><p>{logoAgentResult?.notes || reviewResult.logoReview?.notes || 'This scan looks for embedded images resembling approved logos. Page-level logo use is assessed in Visual layout review.'}</p></div>}
                   {reviewResult.logoReferences?.length > 0 && <div className="logo-review-references"><b>Approved references in this session</b>{reviewResult.logoReferences.map((logo) => <small key={logo.logo_id}>{logo.title} · {logo.original_name}</small>)}</div>}
                 </div>
               </div>

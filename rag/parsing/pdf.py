@@ -134,27 +134,27 @@ class PdfParser:
                     except Exception:
                         warnings.append(f"An embedded image on PDF page {page_number} could not be extracted.")
 
-                # Preserve pages whose useful visuals are vector paths (for example,
-                # vector logos or charts) only when there is substantial drawing content.
-                if store_images and not image_refs and drawing_count >= 4 and drawing_coverage >= 0.08:
+                # Full-page previews let the visual-layout agent inspect hierarchy,
+                # spacing, and composition, including pages that also embed images.
+                if store_images:
                     try:
                         longest_edge = max(float(page.rect.width), float(page.rect.height), 1.0)
                         render_scale = min(1.5, 1800.0 / longest_edge)
                         rendered = page.get_pixmap(matrix=fitz.Matrix(render_scale, render_scale), alpha=False)
-                        payload = rendered.tobytes("png")
+                        payload = rendered.tobytes("jpeg", jpg_quality=82)
                         digest = hashlib.sha256(payload).hexdigest()
                         storage_ref = None
                         if asset_dir is not None:
                             storage_ref = stored_by_hash.get(digest)
                             if storage_ref is None:
-                                asset_path = asset_dir / f"{digest}.png"
+                                asset_path = asset_dir / f"{digest}.jpg"
                                 if not asset_path.exists():
                                     asset_path.write_bytes(payload)
                                 storage_ref = str(asset_path.relative_to(asset_dir.parent))
                                 stored_by_hash[digest] = storage_ref
                         images.append(ExtractedImage(
                             image_id=f"page_{page_number}", page=page_number,
-                            format="png", width=rendered.width, height=rendered.height,
+                            format="jpg", width=rendered.width, height=rendered.height,
                             extraction_method="page_render", storage_ref=storage_ref,
                             sha256=digest,
                         ))

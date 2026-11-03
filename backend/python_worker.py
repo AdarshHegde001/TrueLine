@@ -225,6 +225,7 @@ def _review(request, parse_document, prepare_review, Adapter, knowledge, db, ing
             except Exception:
                 continue
         logo_candidates = _select_logo_candidates(document.images, image_root, approved_logos)
+        visual_images = _select_visual_images(document.images, image_root)
         # Temporary paths are internal only; return source/page/hash metadata, not paths.
         safe_images = tuple(image.model_copy(update={"storage_ref": None}) for image in document.images)
         document = document.model_copy(update={"images": safe_images})
@@ -242,6 +243,7 @@ def _review(request, parse_document, prepare_review, Adapter, knowledge, db, ing
         result = run_agentic_review(
             prepared, adapter, rulebook=rulebook,
             logo_candidates=logo_candidates, approved_logos=approved_logos,
+            visual_images=visual_images,
         )
         result["visualAssets"] = [image.model_dump(mode="json") for image in safe_images]
         result["logoReferences"] = [
@@ -338,6 +340,36 @@ def _select_logo_candidates(images, image_root, approved_logos):
             "local_match_score": round(best[0], 3),
         })
     return candidates
+
+
+def _select_visual_images(images, image_root, *, max_item_bytes=4 * 1024 * 1024):
+    """Load bounded full-page previews for layout analysis; never expose paths."""
+    selected = []
+    seen_pages = set()
+    for image in images:
+        if image.extraction_method not in {"page_render", "submitted"} or not image.storage_ref:
+            continue
+        if image.page in seen_pages:
+            continue
+        image_path = (Path(image_root) / image.storage_ref).resolve()
+        if Path(image_root).resolve() not in image_path.parents:
+            continue
+        try:
+            data = image_path.read_bytes()
+        except OSError:
+            continue
+        if len(data) > max_item_bytes:
+            continue
+        extension = str(image.format or "").lower()
+        content_type = {
+            "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp",
+        }.get(extension)
+        if not content_type:
+            continue
+        selected.append({"image_id": image.image_id, "page": image.page,
+                         "content_type": content_type, "data": data})
+        seen_pages.add(image.page)
+    return selected
 
 
 if __name__ == "__main__":
