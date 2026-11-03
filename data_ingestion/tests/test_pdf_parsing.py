@@ -88,7 +88,7 @@ def test_vector_visual_page_is_saved_as_page_render(tmp_path):
         store_images=True, asset_storage_dir=tmp_path,
     )
     render = next(image for image in parsed.images if image.extraction_method == "page_render")
-    assert render.page == 1 and render.format == "png"
+    assert render.page == 1 and render.format == "jpg"
     assert (tmp_path / render.storage_ref).is_file()
 
 

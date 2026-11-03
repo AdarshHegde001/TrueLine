@@ -1114,6 +1114,11 @@ h1, h2, h3, p { margin-top: 0; }
   font-weight: 800;
   letter-spacing: -.03em;
 }
+.review-check-failures { margin: 0 0 16px; padding: 14px 16px; border: 1px solid #efc9b8; border-radius: var(--r-md); color: #713d2d; background: #fff6f1; font-size: 13px; }
+.review-check-failures > b { display: block; color: #8a3d28; }
+.review-check-failures p { margin: 5px 0 0; line-height: 1.5; }
+.review-check-failures ul { display: grid; gap: 4px; margin: 8px 0 0; padding-left: 19px; }
+.review-check-failures li { line-height: 1.45; }
 .results-grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
 /* .result-panel, .agent-finding, .citation-card overrides live in new-components block at end of file */
 /* .result-panel { min-width: 0; padding: 22px; } */
@@ -1544,6 +1549,9 @@ h1, h2, h3, p { margin-top: 0; }
 .citation-list > b { margin: 0 0 2px; color: var(--ink); font-size: 12px; }
 .citation-missing { margin: 10px 0 0; color: var(--muted); font-size: 11px; }
 .citation-validation-note { display: block; margin-top: 8px; color: var(--muted); font-size: 10px; }
+.correction-success p { margin: 10px 0 0; }
+.correction-success ul { margin: 6px 0 0; padding-left: 20px; color: var(--red); font-size: 12px; line-height: 1.5; }
+.correction-noop { color: var(--red); }
 /* .citation-card hover override lives in new-components block at end of file */
 /* .citation-card { padding: 11px 12px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--canvas); } */
 .citation-heading { display: flex; justify-content: space-between; gap: 12px; color: var(--ink); font-size: 12px; }

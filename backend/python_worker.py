@@ -34,7 +34,7 @@ def main() -> None:
             from rag.parsing.registry import parse_document
             from rag.agentic.workflow import model_configuration, run_agentic_review
             from rag.agentic.rulebook import extract_reference_rules
-            from rag.agentic.correction import generate_corrected_docx
+            from rag.agentic.correction import generate_corrected_document
             from rag.review import MAX_REVIEW_TEXT_CHARS, ReviewDocumentTooLargeError, prepare_review
             from rag.retrieval.client import IngestionKnowledgeAdapter
             from trueline_ingestion import db, ingest
@@ -70,8 +70,9 @@ def main() -> None:
                                      run_agentic_review, sessions, logos,
                                      MAX_REVIEW_TEXT_CHARS, ReviewDocumentTooLargeError)
                 elif operation == "correct":
-                    result = _correct(request, parse_document, generate_corrected_docx,
-                                      sessions, db, settings)
+                    result = _correct(request, parse_document, generate_corrected_document,
+                                      sessions, logos, db, settings,
+                                      IngestionKnowledgeAdapter, knowledge)
                 elif operation == "start_session":
                     with db.connect(settings) as conn:
                         result = sessions.start_session(conn, request["organizationId"])
@@ -254,14 +255,36 @@ def _review(request, parse_document, prepare_review, Adapter, knowledge, db, ing
         return result
 
 
-def _correct(request, parse_document, generate_corrected_docx, sessions, db, settings):
-    _session_brand_id(request, db, settings, sessions)
+def _correct(request, parse_document, generate_corrected_document, sessions, logos, db, settings,
+             Adapter=None, knowledge=None):
+    brand_id = _session_brand_id(request, db, settings, sessions)
     data = base64.b64decode(request["fileBase64"], validate=True)
     document = parse_document(
         data, document_name=request["fileName"], content_type=request.get("contentType"),
         store_images=False,
     )
-    return generate_corrected_docx(document, request.get("reviewData"))
+    with db.connect(settings) as conn:
+        logo_records = logos.get_logo_assets(conn, brand_id)
+    approved_logos = []
+    for logo in logo_records:
+        try:
+            approved_logos.append({
+                **logo,
+                "data": logos.read_storage_ref(logo["storage_ref"]),
+            })
+        except Exception:
+            continue
+    retriever = None
+    if Adapter is not None and knowledge is not None:
+        retriever = Adapter(
+            search_knowledge=lambda search_request: knowledge.search(search_request).model_dump(mode="json"),
+            get_deterministic_rules=lambda **_kwargs: [],
+        )
+    return generate_corrected_document(
+        document, data, request.get("reviewData"), approved_logos=approved_logos,
+        brand_id=brand_id,
+        search_knowledge=retriever.search_knowledge if retriever else None,
+    )
 
 
 def _select_visual_assets(images, image_root, *, max_assets=8, max_item_bytes=4 * 1024 * 1024,

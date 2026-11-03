@@ -26,7 +26,10 @@ const documentTypes = new Set([
 
 app.use(cors({
   origin: process.env.FRONTEND_ORIGIN || 'http://localhost:5173',
-  exposedHeaders: ['X-Trueline-Edits-Applied', 'X-Trueline-Unresolved-Count', 'X-Trueline-Format-Note'],
+  exposedHeaders: [
+    'X-Trueline-Edits-Applied', 'X-Trueline-Unresolved-Count',
+    'X-Trueline-Unresolved-Details', 'X-Trueline-Tool-Calls', 'X-Trueline-Format-Note',
+  ],
 }));
 app.use(express.json({ limit: '1mb' }));
 
@@ -315,12 +318,14 @@ app.post('/api/review/correct', reviewUpload.single('file'), async (req, res, ne
       organizationId: organizationBrandId,
       reviewData,
     });
-    const stem = path.parse(file.fileName).name.replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 100) || 'review';
-    const filename = `${stem}-corrected.docx`;
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    const filename = String(result.fileName || `${path.parse(file.fileName).name}-corrected.docx`)
+      .replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 120);
+    res.setHeader('Content-Type', result.contentType || 'application/octet-stream');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.setHeader('X-Trueline-Edits-Applied', String(result.editsApplied || 0));
     res.setHeader('X-Trueline-Unresolved-Count', String(result.unresolvedFindings?.length || 0));
+    res.setHeader('X-Trueline-Unresolved-Details', encodeURIComponent(JSON.stringify((result.unresolvedFindings || []).slice(0, 5))));
+    res.setHeader('X-Trueline-Tool-Calls', String(result.toolCalls || 0));
     res.setHeader('X-Trueline-Format-Note', encodeURIComponent(result.formatNote || ''));
     res.send(Buffer.from(result.fileBase64, 'base64'));
   } catch (error) { next(error); }

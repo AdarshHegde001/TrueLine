@@ -32,7 +32,10 @@ function StatusPill({ status }) {
   const kind = ['READY', 'COMPLETE', 'PASSED'].includes(normalized) ? 'good'
     : ['ERROR', 'CHECK_FAILED', 'VIOLATION'].includes(normalized) ? 'bad'
       : ['UNSUPPORTED', 'UNVERIFIED'].includes(normalized) ? 'pending' : 'pending';
-  const label = normalized === 'COMPLETE' ? 'COMPLETED' : String(status || 'pending').replaceAll('_', ' ');
+  const label = normalized === 'COMPLETE' ? 'COMPLETED'
+    : normalized === 'ERROR' ? 'ERROR'
+    : normalized === 'CHECK_FAILED' ? 'REVIEW INCOMPLETE'
+      : String(status || 'pending').replaceAll('_', ' ');
   return <span className={`status-pill ${kind}`}><i />{label}</span>;
 }
 
@@ -132,7 +135,7 @@ function App() {
   const [knowledgeBatchComplete, setKnowledgeBatchComplete] = useState(false);
   const [reviewBusy, setReviewBusy] = useState(false);
   const [correctionBusy, setCorrectionBusy] = useState(false);
-  const [correctedDocx, setCorrectedDocx] = useState(null);
+  const [correctedDraft, setCorrectedDraft] = useState(null);
   const [toast, setToast] = useState('');
   const [dragOver, setDragOver] = useState(false);
   const [reviewDragOver, setReviewDragOver] = useState(false);
@@ -235,7 +238,7 @@ function App() {
       setLogoTitle('');
       setReviewFile(null);
       setReviewResult(null);
-      setCorrectedDocx(null);
+      setCorrectedDraft(null);
       setKnowledgeBatchComplete(false);
       setActiveTab('knowledge');
       notify('Session started. Add your source files; they will be cleared when you end the session.');
@@ -270,7 +273,7 @@ function App() {
       setLogoTitle('');
       setReviewFile(null);
       setReviewResult(null);
-      setCorrectedDocx(null);
+      setCorrectedDraft(null);
       setKnowledgeBatchComplete(false);
       setActiveTab('home');
       notify('Session ended. All uploaded knowledge and embeddings were cleared.');
@@ -369,7 +372,7 @@ function App() {
     if (reviewFile.size > MAX_REVIEW_FILE_BYTES) return notify('Review documents may be up to 50 MB.');
     setReviewBusy(true);
     setReviewResult(null);
-    setCorrectedDocx(null);
+    setCorrectedDraft(null);
     setToast('');
     try {
       const body = new FormData();
@@ -390,14 +393,13 @@ function App() {
   async function generateCorrection() {
     if (!session || !reviewFile || !summaryResult?.summary) return notify('Complete a review before generating a corrected draft.');
     setCorrectionBusy(true);
-    setCorrectedDocx(null);
+    setCorrectedDraft(null);
     try {
       const findings = summaryResult.findings || [];
-      const extractedRules = agentResults.extraction?.rules || [];
       const body = new FormData();
       body.append('file', reviewFile);
       body.append('sessionId', session.sessionId);
-      body.append('reviewData', JSON.stringify({ summary: summaryResult.summary, extracted_rules: extractedRules, findings }));
+      body.append('reviewData', JSON.stringify({ summary: summaryResult.summary, findings }));
       const response = await fetch(`${API}/api/review/correct`, { method: 'POST', body });
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
@@ -405,10 +407,17 @@ function App() {
       }
       const blob = await response.blob();
       const stem = reviewFile.name.replace(/\.[^.]+$/, '') || 'review';
-      setCorrectedDocx({
-        blob, filename: `${stem}-corrected.docx`,
+      const extension = reviewFile.name.match(/\.[^.]+$/)?.[0] || '.docx';
+      let unresolvedDetails = [];
+      try {
+        unresolvedDetails = JSON.parse(decodeURIComponent(response.headers.get('X-Trueline-Unresolved-Details') || '%5B%5D'));
+      } catch { /* Older API processes may not return correction diagnostics. */ }
+      setCorrectedDraft({
+        blob, filename: `${stem}-corrected${extension}`,
         editsApplied: Number(response.headers.get('X-Trueline-Edits-Applied') || 0),
         unresolvedCount: Number(response.headers.get('X-Trueline-Unresolved-Count') || 0),
+        toolCalls: Number(response.headers.get('X-Trueline-Tool-Calls') || 0),
+        unresolvedDetails,
         formatNote: decodeURIComponent(response.headers.get('X-Trueline-Format-Note') || ''),
       });
     } catch (error) {
@@ -419,11 +428,11 @@ function App() {
   }
 
   function downloadCorrection() {
-    if (!correctedDocx) return;
-    const url = URL.createObjectURL(correctedDocx.blob);
+    if (!correctedDraft) return;
+    const url = URL.createObjectURL(correctedDraft.blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = correctedDocx.filename;
+    link.download = correctedDraft.filename;
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -436,6 +445,14 @@ function App() {
   const extractionResult = agentResults.extraction;
   const visualAgentResult = agentResults.visual;
   const specialistEvidence = reviewResult?.agentEvidence || {};
+  const correctionSupportedFile = reviewFile && /\.(docx|pdf|txt|md)$/i.test(reviewFile.name);
+  const correctionFindings = (summaryResult?.findings || []).filter((finding) => {
+    if (!['VIOLATION', 'UNSUPPORTED'].includes(finding.classification)) return false;
+    if (finding.category === 'Visual layout') {
+      return /\.pdf$/i.test(reviewFile?.name || '') && Boolean(finding.visual_reference?.page);
+    }
+    return Boolean(finding.document_quote);
+  });
 
   return (
     <div className="app-shell">
@@ -743,9 +760,9 @@ function App() {
                   className={`dropzone review-drop${reviewDragOver ? ' dropzone--active' : ''}`}
                   onDragOver={(e) => { e.preventDefault(); setReviewDragOver(true); }}
                   onDragLeave={() => setReviewDragOver(false)}
-                  onDrop={(e) => { e.preventDefault(); setReviewDragOver(false); setReviewFile(e.dataTransfer.files?.[0] || null); setReviewResult(null); setCorrectedDocx(null); }}
+                  onDrop={(e) => { e.preventDefault(); setReviewDragOver(false); setReviewFile(e.dataTransfer.files?.[0] || null); setReviewResult(null); setCorrectedDraft(null); }}
                 >
-                  <input type="file" accept=".txt,.md,.pdf,.docx,.png,.jpg,.jpeg,.webp" onChange={(e) => { setReviewFile(e.target.files?.[0] || null); setReviewResult(null); setCorrectedDocx(null); }} />
+                  <input type="file" accept=".txt,.md,.pdf,.docx,.png,.jpg,.jpeg,.webp" onChange={(e) => { setReviewFile(e.target.files?.[0] || null); setReviewResult(null); setCorrectedDraft(null); }} />
                   <span className="drop-icon">↑</span><b>{reviewFile ? reviewFile.name : 'Choose a document or image to verify'}</b><small>PDF, DOCX, TXT, Markdown, PNG, JPEG, or WebP · up to 50 MB</small>
                 </label>
                 <p className="image-privacy-note">Text and tables are extracted locally for tone and claims checks. The visual agent receives every PDF page preview and your approved logo references; it does not receive extracted review text.</p>
@@ -773,20 +790,32 @@ function App() {
             </div>
 
             {reviewResult && <div className="results-section">
-              <div className="results-heading"><div><div className="eyebrow"><span className="eyebrow-line" /> REVIEW OUTPUT</div><h2>Review results</h2></div><StatusPill status={summaryResult?.classification || summaryResult?.status || 'complete'} /></div>
+              <div className="results-heading"><div><div className="eyebrow"><span className="eyebrow-line" /> REVIEW OUTPUT</div><h2>Review results</h2></div><StatusPill status={summaryResult?.status || 'complete'} /></div>
+              {summaryResult?.failureDetails?.length > 0 && <div className="review-check-failures" role="status">
+                <b>Some review checks did not complete</b>
+                <p>{summaryResult?.status === 'complete' ? 'Validated findings are shown below.' : 'At least one review agent or retrieval step failed; available validated findings are still shown below.'}</p>
+                <ul>{summaryResult.failureDetails.map((item, index) => <li key={`${item.check}-${index}`}><b>{item.check}:</b> {item.detail}</li>)}</ul>
+              </div>}
               {reviewResult.preparedReview?.document?.warnings?.length > 0 && <div className="parse-warning review-warning">{reviewResult.preparedReview.document.warnings.map((warning, index) => <p key={`review-warning-${index}`}>{warning}</p>)}</div>}
               {reviewResult.visualAssets?.length > 0 && <div className="visual-review-notice"><b>{reviewResult.visualAssets.length} image{reviewResult.visualAssets.length === 1 ? '' : 's'} extracted</b><span>{[...new Set(reviewResult.visualAssets.map((item) => item.page))].map((page) => `page ${page}`).join(' · ')} · {visualAgentResult?.coverage?.embedded_assets_provided ?? 0} embedded asset{visualAgentResult?.coverage?.embedded_assets_provided === 1 ? '' : 's'} and {visualAgentResult?.coverage?.logo_references_provided ?? 0} approved logo reference{visualAgentResult?.coverage?.logo_references_provided === 1 ? '' : 's'} sent to visual review</span></div>}
-              <div className="panel result-panel ai-panel summary-panel"><div className="result-panel-heading"><div><span className="result-index ai-index">✦</span><h3>Final review summary</h3></div><span className="result-count">{summaryResult?.status === 'error' ? 'CHECK FAILED' : 'COMPLETED'}</span></div>
+              <div className="panel result-panel ai-panel summary-panel"><div className="result-panel-heading"><div><span className="result-index ai-index">✦</span><h3>Final review summary</h3></div><span className="result-count">{summaryResult?.status === 'error' ? 'REVIEW ERROR' : 'REVIEW COMPLETED'}</span></div>
                 {summaryResult?.summary ? <MarkdownText className="markdown-summary">{summaryResult.summary}</MarkdownText> : <div className="ai-empty"><div className="ai-empty-icon">✦</div><b>{summaryResult?.status === 'error' ? 'Summary unavailable' : 'No summary returned'}</b><p>The deterministic results and specialist agent outputs are shown below.</p></div>}
                 {summaryResult?.notes && <p className="citation-validation-note">{summaryResult.error_type ? `Summary agent error: ${summaryResult.error_type}. ` : ''}{summaryResult.notes}</p>}
                 {summaryResult?.key_findings?.length > 0 && <div className="summary-key-findings"><b>Key findings</b><ul>{summaryResult.key_findings.map((finding, index) => <li key={`${index}-${finding}`}>{finding}</li>)}</ul></div>}
-                {summaryResult?.summary && summaryResult?.findings?.length > 0 && <div className="correction-action">
-                  <div><b>Create a corrected draft?</b><p>{summaryResult?.status === 'error' ? 'Summary prioritization failed; the draft will use the validated findings shown above. Review it before use.' : 'The correction agent will use the original upload and the findings above to prepare a DOCX draft. Review it before use.'}</p></div>
-                  {correctedDocx
-                    ? <button className="primary-button" type="button" onClick={downloadCorrection}>Download corrected DOCX <b>↓</b></button>
-                    : <button className="primary-button" type="button" onClick={generateCorrection} disabled={correctionBusy || reviewBusy}>{correctionBusy ? <><span className="spinner" /> Generating…</> : <>Generate corrected DOCX <b>→</b></>}</button>}
+                {correctionSupportedFile && summaryResult?.summary && <div className="correction-action">
+                  <div><b>Correction agent</b><p>{correctionFindings.length === 0
+                    ? 'No validated text or PDF visual finding is currently eligible for an automatic correction.'
+                    : summaryResult?.status === 'error'
+                      ? 'A review step failed; the correction agent will use the validated findings shown above. Review the result before use.'
+                      : 'The correction agent can patch flagged text and supported PDF visual targets, including approved logo replacements. Review the result before use.'}</p></div>
+                  {correctedDraft?.editsApplied > 0
+                    ? <button className="primary-button" type="button" onClick={downloadCorrection}>Download corrected file <b>↓</b></button>
+                    : <button className="primary-button" type="button" onClick={generateCorrection} disabled={!correctionFindings.length || correctionBusy || reviewBusy}>{correctionBusy ? <><span className="spinner" /> Generating…</> : <>{correctedDraft ? 'Retry correction' : 'Generate corrected file'} <b>→</b></>}</button>}
                 </div>}
-                {correctedDocx && <p className="correction-success" role="status">Draft ready: {correctedDocx.editsApplied} edit{correctedDocx.editsApplied === 1 ? '' : 's'} applied{correctedDocx.unresolvedCount ? ` · ${correctedDocx.unresolvedCount} item${correctedDocx.unresolvedCount === 1 ? '' : 's'} need manual review` : ''}. {correctedDocx.formatNote || 'Formatting and visuals may differ from the uploaded file.'} Please review the draft before use.</p>}
+                {correctedDraft && <div className={`correction-success${correctedDraft.editsApplied ? '' : ' correction-noop'}`} role="status">
+                  <p>{correctedDraft.editsApplied ? `Draft ready: ${correctedDraft.editsApplied} edit${correctedDraft.editsApplied === 1 ? '' : 's'} applied` : 'No correction was applied'} · {correctedDraft.toolCalls} document tool call{correctedDraft.toolCalls === 1 ? '' : 's'}{correctedDraft.unresolvedCount ? ` · ${correctedDraft.unresolvedCount} item${correctedDraft.unresolvedCount === 1 ? '' : 's'} need manual review` : ''}. {correctedDraft.formatNote}</p>
+                  {correctedDraft.unresolvedDetails?.length > 0 && <ul>{correctedDraft.unresolvedDetails.map((item, index) => <li key={`unresolved-${index}`}>{item}</li>)}</ul>}
+                </div>}
               </div>
               <div className="results-grid">
                 <div className="panel result-panel"><div className="result-panel-heading"><div><span className="result-index">A</span><h3>Deterministic checks</h3></div><span className="result-count">{deterministicFindings.length} FINDING{deterministicFindings.length === 1 ? '' : 'S'}</span></div>

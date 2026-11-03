@@ -216,28 +216,30 @@ def test_tone_violation_requires_explicit_rule_quote_inside_valid_citation():
     assert ungrounded_pass["findings"][0]["classification"] == "UNVERIFIED"
 
 
-def test_logo_result_uses_only_supplied_ids_and_cannot_invent_page_or_violation():
+def test_visual_result_uses_only_supplied_ids_and_cannot_invent_page_or_reference():
     output = {
         "status": "complete", "findings": [
-            {"review_image_id": "img_1", "page": 999, "detection": "logo",
-             "reference_logo_id": "logo_1", "comparison": "differences_observed",
+            {"image_id": "img_1", "page": 999, "assessment": "Logo color differs",
+             "reference_logo_id": "logo_1", "logo_comparison": "differences_observed",
+             "classification": "VIOLATION", "severity": "high",
              "observation": "The mark appears to use a different color."},
-            {"review_image_id": "invented_image", "page": 1, "detection": "logo",
-             "reference_logo_id": "logo_1", "comparison": "differences_observed",
+            {"image_id": "invented_image", "page": 1, "assessment": "Invented candidate",
+             "reference_logo_id": "logo_1", "logo_comparison": "differences_observed",
+             "classification": "VIOLATION", "severity": "high",
              "observation": "Invented candidate."},
         ],
     }
-    validated = workflow._validate_logo_findings(
+    validated = workflow._validate_visual_findings(
         output,
-        [{"image_id": "img_1", "page": 3}],
+        [{"image_id": "img_1", "page": 3}], [], BRAND,
         [{"logo_id": "logo_1", "title": "Approved primary mark"}],
     )
     assert len(validated["findings"]) == 1
     finding = validated["findings"][0]
     assert finding["page"] == 3
     assert finding["reference_logo_title"] == "Approved primary mark"
-    assert finding["classification"] == "UNVERIFIED"
-    assert validated["classification"] == "UNVERIFIED"
+    assert finding["classification"] == "VIOLATION"
+    assert validated["classification"] == "VIOLATION"
 
 
 def test_duplicate_summary_items_collapse_but_distinct_claims_in_same_sentence_remain():
@@ -255,7 +257,7 @@ def test_duplicate_summary_items_collapse_but_distinct_claims_in_same_sentence_r
     candidates = workflow._summary_candidates(prepared, {"findings": []}, claims)
     assert len(candidates) == 2
     summary, key_findings = workflow._render_summary(candidates, selected_ids=["invented-id"])
-    assert summary.count("### Claims · high severity") == 2
+    assert summary.count("### Claims - high severity") == 2
     assert "VIOLATION" not in summary
     assert "Approved Product Facts, v2, page 4" in summary
     assert "Nova doubles retention." in summary and "Nova is fast." in summary
@@ -453,12 +455,8 @@ def test_review_graph_uses_ingestion_rulebook_and_summary_only_selects_validated
             return {"status": "complete", "classification": "PASSED", "findings": [], "notes": ""}
         if schema is workflow.ClaimsResult:
             return {"status": "complete", "classification": "PASSED", "findings": [], "notes": ""}
-        if schema is workflow.SummaryResult:
-            return {"status": "complete", "classification": "VIOLATION", "summary": "invented",
-                    "key_findings": ["invented"], "selected_finding_ids": ["invented-id"],
-                    "human_review_required": True,
-                    "findings": [{"rule_id": "invented", "document_quote": "made up",
-                        "subject": "invented", "explanation": "invented", "citations": [_citation()]}]}
+        if schema is workflow.SummaryRankingResult:
+            return {"selected_finding_ids": ["invented-id"]}
         raise AssertionError(f"Unexpected model schema: {schema.__name__}")
 
     monkeypatch.setattr(workflow, "_chat", lambda _agent: object())
@@ -473,7 +471,7 @@ def test_review_graph_uses_ingestion_rulebook_and_summary_only_selects_validated
     )
     assert "session_rulebook" in captured["ClaimsResult"]
     assert "review_document" in captured["ClaimsResult"]
-    summary_payload = captured["SummaryResult"]
+    summary_payload = captured["SummaryRankingResult"]
     assert set(summary_payload) == {"validated_findings", "finding_ids"}
     assert "invented-id" not in result["agentResults"]["summary"]["summary"]
     assert "made up" not in result["agentResults"]["summary"]["summary"]
@@ -497,6 +495,9 @@ def test_agent_investigation_caps_queries_and_reassesses_with_search_results(mon
         if len(calls) == 1:
             return {"status": "complete", "classification": "UNVERIFIED", "findings": [],
                     "search_queries": ["one", "two", "three", "four"]}
+        if len(calls) < 4:
+            return {"status": "complete", "classification": "UNVERIFIED", "findings": [],
+                    "search_queries": [f"query-{len(calls)}"]}
         return {"status": "complete", "classification": "UNVERIFIED", "findings": [],
                 "search_queries": []}
 
@@ -510,7 +511,7 @@ def test_agent_investigation_caps_queries_and_reassesses_with_search_results(mon
     )
     assert len(requests) == workflow.MAX_AGENT_SEARCHES == 3
     assert all(request.top_k <= workflow.AGENT_SEARCH_TOP_K for request in requests)
-    assert len(calls) == 2
+    assert len(calls) == 4
     assert calls[1]["agent_search_results"] == evidence
     assert result["search_queries"] == []
     assert failed is False

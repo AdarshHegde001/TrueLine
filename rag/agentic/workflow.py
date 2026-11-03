@@ -78,8 +78,8 @@ class ToneResult(BaseModel):
 class ClaimFinding(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    document_quote: str = Field(min_length=1)
-    claim: str = Field(min_length=1)
+    document_quote: str = Field(min_length=1, description="Exact text for one independently checkable claim")
+    claim: str = Field(min_length=1, description="The specific factual assertion being checked")
     status: Literal["supported", "contradicted", "unverified", "unsupported"] = Field(description="supported, contradicted, unverified, or unsupported")
     explanation: str
     severity: Literal["low", "medium", "high"] = "medium"
@@ -284,7 +284,7 @@ def _retrieve(
 
 
 MAX_AGENT_SEARCHES = 3
-AGENT_SEARCH_TOP_K = 5
+AGENT_SEARCH_TOP_K = 8
 MAX_AGENT_SEARCHES_PER_CHUNK = 2
 REVIEW_CHUNK_MAX_CHARS = 12_000
 REVIEW_CHUNK_OVERLAP_CHARS = 600
@@ -664,8 +664,9 @@ TONE_AGENT_INSTRUCTIONS = (
     "an explicit extracted voice rule. Treat global tone rules and explicit tone prohibitions as "
     "high-priority, but apply them only within their stated scope. Do not assess factual truth, product "
     "claims, substantiation, prices, rankings, statistics, legal or regulatory compliance, or "
-    "performance; those belong to the claims specialist. Do not restate a claims/compliance issue as "
-    "a tone finding, and do not assess logo/image compliance. Do not invent, infer, "
+    "performance; those are outside your role and belong to the claims specialist. Do not restate a claims/compliance issue as "
+    "a tone finding. "
+    "Do not assess logo/image compliance. Do not invent, infer, "
     "extend, or apply rules that are not in the rulebook or approved retrieved evidence. If a rule or "
     "draft passage needs further checking, return up to three short, focused search_queries for the "
     "bounded approved-source search tool. If no applicable rule supports a finding, do not assert a "
@@ -683,7 +684,11 @@ TONE_AGENT_INSTRUCTIONS = (
 
 CLAIMS_AGENT_INSTRUCTIONS = (
     "You are a claims, product-facts, substantiation, and source-grounded legal/regulatory compliance "
-    "review specialist. Inspect each supplied document chunk carefully; the application provides every "
+    "review specialist. Inspect each supplied document chunk carefully and inventory every independently "
+    "checkable factual assertion in it, not only claims that already look suspicious. Return one finding "
+    "for each distinct assertion, using its exact document_quote; split a sentence when it makes multiple "
+    "separately testable assertions. Classify each as supported, contradicted, unsupported, or unverified. "
+    "The application provides every "
     "chunk in source order. Do not assume a chunk is the entire document, and do not skip its middle or "
     "ending. Start with the supplied session rulebook and only deterministic checks relevant to "
     "claims/compliance. "
@@ -699,8 +704,10 @@ CLAIMS_AGENT_INSTRUCTIONS = (
     "and do not assess logo/image compliance. Do not use another agent's results as evidence. Do not "
     "provide independent legal advice or assert that a law or regulation applies unless an applicable "
     "approved source is supplied. Do not invent or infer policies, facts, or findings beyond the rulebook and "
-    "approved retrieved evidence. When relevant source evidence is missing or uncertain, return up to "
-    "three short, focused search_queries for the bounded approved-source search tool. "
+    "approved retrieved evidence. For every claim without directly relevant evidence in this chunk, "
+    "request focused RAG retrieval; include product names, the asserted value or outcome, and key qualifiers "
+    "in the query. Use up to three distinct focused search_queries and do not conclude that a claim is "
+    "supported merely because unrelated approved sources were retrieved. "
     "Compare each product name, price (including currency), and explicitly labeled quantity/unit in "
     "the document against matching product_fact entries. Treat different currencies as different "
     "values, and never compare facts across different product names. For every finding, copy a citation "
@@ -1754,6 +1761,26 @@ def run_agentic_review(
             limitations.append(f"Visual layout review: CHECK_FAILED for {len(failed_pages)} of {visual.get('coverage', {}).get('pages_total', 0)} page previews.")
         if not extracted_rules:
             limitations.append("No model-extracted rules are available from the active approved sources.")
+        failure_details: list[dict[str, str]] = []
+        if prepared.retrieval_status == "failed":
+            failure_details.append({"check": "Source retrieval", "detail": "The initial document-to-knowledge search did not complete."})
+        if extraction.get("classification") == "CHECK_FAILED":
+            failure_details.append({"check": "Rule extraction", "detail": extraction.get("notes") or "The reference rules could not be extracted completely."})
+        for label, result in (("Tone", tone), ("Claims", claims), ("Visual", visual)):
+            coverage = result.get("coverage", {})
+            if (result.get("classification") == "CHECK_FAILED"
+                    or result.get("status") in {"error", "failed"}
+                    or result.get("tool_search_status") == "failed"
+                    or coverage.get("status") in {"partial", "failed"}):
+                detail = result.get("notes") or "One or more review steps did not complete."
+                if coverage.get("status") in {"partial", "failed"}:
+                    if label == "Visual":
+                        detail = (f"Visual coverage did not complete for {coverage.get('pages_reviewed', 0)} "
+                                  f"of {coverage.get('pages_total', 0)} pages. {detail}").strip()
+                    else:
+                        detail = (f"Review coverage did not complete for {len(coverage.get('failed_chunks', []))} "
+                                  f"of {coverage.get('chunks_total', 0)} chunks. {detail}").strip()
+                failure_details.append({"check": label, "detail": detail})
         try:
             output = _json_result(
                 _chat("summary"), SummaryRankingResult,
@@ -1781,14 +1808,24 @@ def run_agentic_review(
                 for result in (tone, claims, visual)
             ) or extraction.get("classification") == "CHECK_FAILED":
                 summary_classification = "CHECK_FAILED"
+            upstream_agent_error = (
+                extraction.get("status") == "error"
+                or any(
+                    result.get("status") == "error"
+                    or result.get("tool_search_status") == "failed"
+                    or result.get("coverage", {}).get("status") in {"partial", "failed"}
+                    for result in (tone, claims, visual)
+                )
+            )
             return {"summary_result": {
-                "status": "complete",
+                "status": "error" if upstream_agent_error else "complete",
                 "classification": summary_classification,
                 "summary": summary,
                 "key_findings": key_findings,
                 "findings": candidates,
                 "human_review_required": True,
                 "notes": "",
+                "failureDetails": failure_details,
             }}
         except Exception as exc:
             limitations.append("Summary prioritization: CHECK_FAILED; validated findings are shown in deterministic order.")
@@ -1798,6 +1835,7 @@ def run_agentic_review(
                 "key_findings": key_findings, "findings": candidates, "human_review_required": True,
                 "error_type": type(exc).__name__,
                 "notes": f"Summary ranking failed; validated findings are shown without model prioritization. {_safe_model_error_detail(exc)}",
+                "failureDetails": failure_details + [{"check": "Summary prioritization", "detail": _safe_model_error_detail(exc)}],
             }}
 
     graph = StateGraph(ReviewState)

@@ -1,79 +1,60 @@
-"""DOCX correction export tests use in-memory fixtures and need no database."""
+"""Document-format patching keeps the uploaded DOCX structure intact."""
+
 from io import BytesIO
 
 from docx import Document
 
-from rag.agentic.correction import _tracked_replace, apply_approved_corrections
+from rag.agentic.correction import _build_docx
 from rag.parsing.docx import DocxParser
 
 
-def test_tracked_replace_marks_original_and_replacement():
-    doc = Document()
-    paragraph = doc.add_paragraph()
-    paragraph.add_run("Intro ")
-    target = paragraph.add_run("old claim")
-    target.bold = True
-    paragraph.add_run(" ending")
-
-    assert _tracked_replace(paragraph, "old claim", "revised claim", 1)
-    xml = paragraph._p.xml
-    assert "<w:del" in xml and "<w:ins" in xml
-    assert "old claim" in xml and "revised claim" in xml
-    assert "<w:b" in xml  # the original formatting is carried to the tracked runs
-
-
-def test_tracked_replace_skips_a_quote_spanning_runs():
-    doc = Document()
-    paragraph = doc.add_paragraph()
-    paragraph.add_run("across ")
-    paragraph.add_run("runs")
-    assert not _tracked_replace(paragraph, "across runs", "replacement", 1)
-
-
-def test_approved_correction_retains_original_docx_structure():
+def _source_docx():
     source = Document()
     source.add_heading("Campaign", level=1)
     source.add_paragraph("The draft says the benefit doubles growth.")
     table = source.add_table(rows=1, cols=1)
     table.cell(0, 0).text = "Keep this table"
-    original = BytesIO()
-    source.save(original)
-    data = original.getvalue()
-    parsed = DocxParser().parse(
-        data, document_name="draft.docx",
-    )
-    paragraph_segment = next(
+    output = BytesIO()
+    source.save(output)
+    return output.getvalue()
+
+
+def test_targeted_docx_patch_preserves_headings_and_tables():
+    data = _source_docx()
+    parsed = DocxParser().parse(data, document_name="draft.docx")
+    segment_index = next(
         index for index, segment in enumerate(parsed.segments)
         if segment.text == "The draft says the benefit doubles growth."
     )
-    result = apply_approved_corrections(
-        parsed, data,
-        [{"edit_id": "edit-1", "segment_index": paragraph_segment,
-          "exact_quote": "doubles growth", "corrected_text": "may improve growth"}],
-        ["edit-1"],
-    )
-    corrected = Document(BytesIO(__import__("base64").b64decode(result["fileBase64"])))
-    assert result["editsApplied"] == 1
+
+    corrected_data, skipped = _build_docx(parsed, data, [{
+        "segment_index": segment_index,
+        "exact_quote": "doubles growth",
+        "corrected_text": "may improve growth",
+    }])
+
+    corrected = Document(BytesIO(corrected_data))
+    assert skipped == []
+    assert corrected.paragraphs[0].style.name.startswith("Heading")
+    assert corrected.paragraphs[1].text == "The draft says the benefit may improve growth."
     assert len(corrected.tables) == 1
     assert corrected.tables[0].cell(0, 0).text == "Keep this table"
-    assert corrected.paragraphs[0].style.name.startswith("Heading")
-    assert "<w:del" in corrected.paragraphs[1]._p.xml
-    assert "<w:ins" in corrected.paragraphs[1]._p.xml
 
 
-def test_unapproved_correction_is_not_applied():
-    source = Document()
-    source.add_paragraph("Leave this sentence alone.")
-    data_buffer = BytesIO()
-    source.save(data_buffer)
-    data = data_buffer.getvalue()
+def test_targeted_docx_patch_skips_a_quote_not_in_the_summary_target():
+    data = _source_docx()
     parsed = DocxParser().parse(data, document_name="draft.docx")
-    result = apply_approved_corrections(
-        parsed, data,
-        [{"edit_id": "edit-1", "segment_index": 0,
-          "exact_quote": "Leave this", "corrected_text": "Change this"}],
-        [],
+    segment_index = next(
+        index for index, segment in enumerate(parsed.segments)
+        if segment.text == "The draft says the benefit doubles growth."
     )
-    corrected = Document(BytesIO(__import__("base64").b64decode(result["fileBase64"])))
-    assert result["editsApplied"] == 0
-    assert "<w:del" not in corrected.paragraphs[0]._p.xml
+
+    corrected_data, skipped = _build_docx(parsed, data, [{
+        "segment_index": segment_index,
+        "exact_quote": "unflagged phrase",
+        "corrected_text": "new wording",
+    }])
+
+    corrected = Document(BytesIO(corrected_data))
+    assert corrected.paragraphs[1].text == "The draft says the benefit doubles growth."
+    assert len(skipped) == 1

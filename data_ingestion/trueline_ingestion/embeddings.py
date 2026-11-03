@@ -29,7 +29,7 @@ class BGEM3Embedder:
         self._model = SentenceTransformer(s.embedding_model_name, **kwargs)
         self.tag = s.embedding_tag
         self.dim = s.embedding_dim
-        got = self._model.get_sentence_embedding_dimension()
+        got = self._model.get_embedding_dimension()
         if got != self.dim:
             raise RuntimeError(f"model dim {got} != expected {self.dim}; refusing to run")
 
