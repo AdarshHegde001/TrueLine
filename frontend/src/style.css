@@ -1108,7 +1108,7 @@ h1, h2, h3, p { margin-top: 0; }
 .review-side-card.quiet .side-card-icon { color: #8a6428; background: #f3eddb; }
 
 /* ─── Results ───────────────────────────────────────────────────────────────── */
-.results-section { margin-top: 52px; }
+.results-section { margin-top: 28px; }
 .results-heading {
   display: flex;
   align-items: flex-end;

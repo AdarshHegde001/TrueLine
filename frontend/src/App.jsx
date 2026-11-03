@@ -388,6 +388,7 @@ function App() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Review preparation failed.');
       setReviewResult(data);
+      setActiveTab('results');
     } catch (error) {
       notify(error.message);
     } finally {
@@ -500,6 +501,7 @@ function App() {
           <button className={`nav-link ${activeTab === 'home' ? 'active' : ''}`} onClick={() => setActiveTab('home')}>Home</button>
           <button className={`nav-link ${activeTab === 'knowledge' ? 'active' : ''}`} disabled={!session || sessionLoading} onClick={goToKnowledge}>Knowledge base</button>
           <button className={`nav-link ${activeTab === 'review' ? 'active' : ''}`} disabled={!session || sessionLoading} onClick={goToReview}>Verify a document</button>
+          {reviewResult && <button className={`nav-link ${activeTab === 'results' ? 'active' : ''}`} onClick={() => setActiveTab('results')}>Review results</button>}
         </nav>
         <div className="session-control">
           {session && <span className="session-state"><i /> Session active</span>}
@@ -764,11 +766,12 @@ function App() {
             <div className="section-title-row library-title"><div><h2>Recently added</h2><p>Uploads made during this session.</p></div><span className="muted-label">{uploads.length} SOURCE{uploads.length === 1 ? '' : 'S'}</span></div>
             <div className="panel table-panel">{uploads.length ? <div className="source-list">{uploads.map((item) => <div className="source-row" key={item.version_id}><div className="source-file-icon knowledge">▤</div><div className="source-name"><b>{item.title}</b><small>{documentTypeLabels[item.document_type] || 'Other reference'} · v{item.version} · {item.chunk_count} chunks</small></div><span className="rule-count">{item.rule_count ? `${item.rule_count} rules` : 'No structured rules'}</span><StatusPill status={item.status} /></div>)}</div> : <div className="empty-state"><div className="empty-icon">▤</div><b>No sources added yet</b><p>Upload approved organization guidance, facts, or claims to prepare retrieval.</p></div>}</div>
           </section>
-        ) : activeTab === 'review' ? (
+        ) : ['review', 'results'].includes(activeTab) ? (
           <section className="page-content review-page animate-fadein">
             <div className="eyebrow"><span className="eyebrow-line" /> DOCUMENT REVIEW</div>
-            <div className="page-heading-row"><div><h1>Check a draft before it goes out.</h1><p className="subtitle">Run deterministic checks and evidence-led tone, claims, and visual reviews against your indexed sources.</p></div><span className="step-label"><b>01</b> AGENTIC REVIEW</span></div>
+            <div className="page-heading-row"><div><h1>{activeTab === 'results' ? 'Review findings' : 'Check a draft before it goes out.'}</h1><p className="subtitle">{activeTab === 'results' ? `Agent results for ${reviewFile?.name || 'your document'}.` : 'Run deterministic checks and evidence-led tone, claims, and visual reviews against your indexed sources.'}</p></div>{activeTab === 'results' ? <button className="text-button results-back-button" onClick={() => setActiveTab('review')}><span>Back to document and rules</span><b>←</b></button> : <span className="step-label"><b>01</b> RULE REVIEW</span>}</div>
 
+            {activeTab === 'review' && <>
             {/* ── Review guide banner ── */}
             <div className="review-guide-banner">
               <div className="rguide-item">
@@ -837,7 +840,9 @@ function App() {
               </div> : <div className="agent-empty"><b>{discardedRuleIds.length ? 'All extracted rules discarded' : 'No extracted rules for this channel'}</b><p>{discardedRuleIds.length ? 'No extracted rules will be sent to the agents.' : 'The review will continue with deterministic checks, retrieved evidence, and specialist agents.'}</p></div>}
             </section>}
 
-            {reviewResult && <div className="results-section">
+            </>}
+
+            {activeTab === 'results' && reviewResult && <div className="results-section">
               <div className="results-heading"><div><div className="eyebrow"><span className="eyebrow-line" /> REVIEW OUTPUT</div><h2>Review results</h2></div><StatusPill status={summaryResult?.status || 'complete'} /></div>
               {summaryResult?.failureDetails?.length > 0 && <div className="review-check-failures" role="status">
                 <b>Some review checks did not complete</b>
@@ -912,7 +917,7 @@ function App() {
                     <b>{finding.image_type === 'embedded_asset' ? `Embedded image · page ${finding.page}` : `Page ${finding.page}`} · {finding.assessment}</b><p>{finding.observation}</p><small>Severity: {finding.severity} · {finding.classification?.replaceAll('_', ' ')}</small>
                     {finding.logo_comparison && <small>Approved logo comparison: {finding.logo_comparison.replaceAll('_', ' ')}{finding.reference_logo_title ? ` · ${finding.reference_logo_title}` : ''}</small>}
                     {(finding.citations || []).length > 0 && <div className="citation-list"><b>Visual guidance</b>{finding.citations.map((citation, citationIndex) => <article className="citation-card" key={`${citation.source_id}-${citation.chunk_id}-${citationIndex}`}><div className="citation-heading"><b>{citation.source_title || citation.source_id}</b><span>v{citation.version_number ?? citation.version_id}</span></div><small>{citation.pages?.length ? `page${citation.pages.length > 1 ? 's' : ''} ${citation.pages.join(', ')}` : citation.page ? `page ${citation.page}` : 'approved source'}</small><blockquote>“{citation.quote}”</blockquote></article>)}</div>}
-                  </article>)}</div> : <div className="agent-empty"><b>{visualAgentResult?.status === 'error' ? 'Visual review could not complete' : visualAgentResult?.status === 'insufficient_evidence' ? 'Page preview unavailable' : 'No visual findings'}</b><p>{visualAgentResult?.notes || (visualAgentResult?.status === 'complete' ? `Reviewed ${visualAgentResult.coverage?.pages_reviewed ?? 'all available'} page${visualAgentResult.coverage?.pages_reviewed === 1 ? '' : 's'}, ${visualAgentResult.coverage?.embedded_assets_provided ?? 0} embedded image asset${visualAgentResult.coverage?.embedded_assets_provided === 1 ? '' : 's'}, and ${visualAgentResult.coverage?.logo_references_provided ?? 0} approved logo reference${visualAgentResult.coverage?.logo_references_provided === 1 ? '' : 's'}. No supported visual issues were reported.` : 'The visual agent found no supported layout issues in the available page previews.')}</p></div>}
+                  </article>)}</div> : <div className="agent-empty"><b>{visualAgentResult?.status === 'error' ? 'Visual review could not complete' : visualAgentResult?.status === 'insufficient_evidence' ? 'Page preview unavailable' : 'No visual findings'}</b><p>{visualAgentResult?.notes || (visualAgentResult?.status === 'complete' ? 'No supported layout problems to show.' : 'The visual agent could not assess layout problems from the available page previews.')}</p></div>}
                   {reviewResult.logoReferences?.length > 0 && <div className="logo-review-references"><b>Approved logo references available for visual review</b>{reviewResult.logoReferences.map((logo) => <small key={logo.logo_id}>{logo.title} · {logo.original_name}</small>)}</div>}
                 </div>
               </div>
