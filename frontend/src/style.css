@@ -1089,6 +1089,14 @@ h1, h2, h3, p { margin-top: 0; }
 .rule-discard-button { flex: 0 0 auto; padding: 7px 12px; border: 1px solid var(--line-2); border-radius: var(--r-sm); color: var(--ink-2); background: var(--paper); font: inherit; font-size: 12px; cursor: pointer; }
 .rule-discard-button:hover { border-color: #c47b70; color: #9e3f33; background: #fff8f6; }
 .rule-discard-status { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+.correction-proposals { margin: 18px 0; padding: 16px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--canvas); }
+.correction-proposals h4 { margin: 0 0 4px; color: var(--ink-2); font-size: 14px; }
+.correction-proposals > div:first-child > p { margin: 0 0 12px; color: var(--muted); font-size: 12px; }
+.correction-proposal-list { display: grid; gap: 9px; }
+.correction-proposal-item { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 13px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--paper); }
+.correction-proposal-item > div > b { color: var(--ink-2); font-size: 12px; }
+.correction-proposal-item p { margin: 5px 0; color: var(--ink-2); font-size: 12px; line-height: 1.55; }
+.correction-proposal-item .correction-proposal-mistake { color: var(--muted); }
 
 /* Review side cards */
 .review-side { display: flex; flex-direction: column; gap: 12px; }

@@ -139,6 +139,7 @@ function App() {
   const [discardedRuleIds, setDiscardedRuleIds] = useState([]);
   const [correctionBusy, setCorrectionBusy] = useState(false);
   const [correctedDraft, setCorrectedDraft] = useState(null);
+  const [correctionProposals, setCorrectionProposals] = useState([]);
   const [toast, setToast] = useState('');
   const [dragOver, setDragOver] = useState(false);
   const [reviewDragOver, setReviewDragOver] = useState(false);
@@ -241,6 +242,7 @@ function App() {
       setLogoTitle('');
       setReviewFile(null);
       setReviewResult(null);
+      setCorrectionProposals([]);
       setCorrectedDraft(null);
       setKnowledgeBatchComplete(false);
       setActiveTab('knowledge');
@@ -276,6 +278,7 @@ function App() {
       setLogoTitle('');
       setReviewFile(null);
       setReviewResult(null);
+      setCorrectionProposals([]);
       setCorrectedDraft(null);
       setKnowledgeBatchComplete(false);
       setActiveTab('home');
@@ -376,6 +379,7 @@ function App() {
     if (!reviewRules) return notify('Review the extracted rules before running agents.');
     setReviewBusy(true);
     setReviewResult(null);
+    setCorrectionProposals([]);
     setCorrectedDraft(null);
     setToast('');
     try {
@@ -388,6 +392,7 @@ function App() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Review preparation failed.');
       setReviewResult(data);
+      setCorrectionProposals(data.agentResults?.summary?.proposed_solutions || []);
       setActiveTab('results');
     } catch (error) {
       notify(error.message);
@@ -417,9 +422,14 @@ function App() {
   function chooseReviewFile(file) {
     setReviewFile(file);
     setReviewResult(null);
+    setCorrectionProposals([]);
     setCorrectedDraft(null);
     setReviewRules(null);
     setDiscardedRuleIds([]);
+  }
+
+  function discardCorrectionProposal(findingId) {
+    setCorrectionProposals((current) => current.filter((proposal) => proposal.finding_id !== findingId));
   }
 
   function discardExtractedRule(bufferId) {
@@ -432,11 +442,12 @@ function App() {
     setCorrectionBusy(true);
     setCorrectedDraft(null);
     try {
-      const findings = summaryResult.findings || [];
+      const findings = correctionFindings;
+      const correctionPlan = correctionProposals.filter((proposal) => findings.some((finding) => finding.id === proposal.finding_id));
       const body = new FormData();
       body.append('file', reviewFile);
       body.append('sessionId', session.sessionId);
-      body.append('reviewData', JSON.stringify({ summary: summaryResult.summary, findings }));
+      body.append('reviewData', JSON.stringify({ summary: summaryResult.summary, findings, correction_plan: correctionPlan }));
       const response = await fetch(`${API}/api/review/correct`, { method: 'POST', body });
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
@@ -483,13 +494,16 @@ function App() {
   const visualAgentResult = agentResults.visual;
   const specialistEvidence = reviewResult?.agentEvidence || {};
   const correctionSupportedFile = reviewFile && /\.(docx|pdf|txt|md)$/i.test(reviewFile.name);
+  const correctionProposalIds = new Set(correctionProposals.map((proposal) => proposal.finding_id));
   const correctionFindings = (summaryResult?.findings || []).filter((finding) => {
+    if (!correctionProposalIds.has(finding.id)) return false;
     if (!['VIOLATION', 'UNSUPPORTED'].includes(finding.classification)) return false;
     if (finding.category === 'Visual layout') {
       return /\.pdf$/i.test(reviewFile?.name || '') && Boolean(finding.visual_reference?.page);
     }
     return Boolean(finding.document_quote);
   });
+  const visibleCorrectionProposals = correctionProposals.filter((proposal) => correctionFindings.some((finding) => finding.id === proposal.finding_id));
 
   return (
     <div className="app-shell">
@@ -855,9 +869,21 @@ function App() {
                 {summaryResult?.summary ? <MarkdownText className="markdown-summary">{summaryResult.summary}</MarkdownText> : <div className="ai-empty"><div className="ai-empty-icon">✦</div><b>{summaryResult?.status === 'error' ? 'Summary unavailable' : 'No summary returned'}</b><p>The deterministic results and specialist agent outputs are shown below.</p></div>}
                 {summaryResult?.notes && <p className="citation-validation-note">{summaryResult.error_type ? `Summary agent error: ${summaryResult.error_type}. ` : ''}{summaryResult.notes}</p>}
                 {summaryResult?.key_findings?.length > 0 && <div className="summary-key-findings"><b>Key findings</b><ul>{summaryResult.key_findings.map((finding, index) => <li key={`${index}-${finding}`}>{finding}</li>)}</ul></div>}
+                {correctionSupportedFile && summaryResult?.proposed_solutions?.length > 0 && <section className="correction-proposals" aria-label="Review proposed corrections">
+                  <div><h4>Proposed corrections</h4><p>All suggestions are included by default. Discard any you do not want the correction agent to apply.</p></div>
+                  {visibleCorrectionProposals.length ? <div className="correction-proposal-list">{visibleCorrectionProposals.map((proposal) => {
+                    const finding = summaryResult.findings.find((item) => item.id === proposal.finding_id);
+                    return <article className="correction-proposal-item" key={proposal.finding_id}>
+                      <div><b>{finding?.category || 'Finding'}: {finding?.subject || 'Review issue'}</b><p className="correction-proposal-mistake">{finding?.explanation}</p><span className="finding-field-label">Proposed solution</span><p>{proposal.proposed_solution}</p></div>
+                      <button className="secondary-button rule-discard-button" type="button" onClick={() => discardCorrectionProposal(proposal.finding_id)}>Discard</button>
+                    </article>;
+                  })}</div> : <p className="rule-discard-status">No proposed corrections remain in the active buffer.</p>}
+                </section>}
                 {correctionSupportedFile && summaryResult?.summary && <div className="correction-action">
                   <div><b>Correction agent</b><p>{correctionFindings.length === 0
-                    ? 'No validated text or PDF visual finding is currently eligible for an automatic correction.'
+                    ? summaryResult?.proposed_solutions?.length && correctionProposals.length === 0
+                      ? 'All proposed corrections were discarded; the correction agent has no approved plan to apply.'
+                      : 'No accepted proposed correction is eligible for this file.'
                     : summaryResult?.status === 'error'
                       ? 'A review step failed; the correction agent will use the validated findings shown above. Review the result before use.'
                       : 'The correction agent can patch flagged text and supported PDF visual targets, including approved logo replacements. Review the result before use.'}</p></div>
